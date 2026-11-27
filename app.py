@@ -108,13 +108,14 @@ class ExportWorker(QThread):
     finished_all = pyqtSignal(list, int, int)   # resultados, ok, fallos
 
     def __init__(self, img, levels, blurs, mode, upscale, folder, fmt, base,
-                 include_gray, size_mm=None):
+                 include_gray, size_mm=None, outlines=False):
         super().__init__()
         self.img, self.levels, self.blurs = img, sorted(levels), blurs
         self.mode, self.upscale = mode, upscale
         self.folder, self.fmt, self.base = folder, fmt, base
         self.include_gray = include_gray
         self.size_mm = size_mm      # (ancho, alto) en mm de cada imagen, o None
+        self.outlines = outlines    # sombreado cruzado: dibujar también los contornos
 
     def run(self):
         results, ok, fail = [], 0, 0
@@ -153,7 +154,7 @@ class ExportWorker(QThread):
         for n in self.levels:
             try:
                 arr = core.blur_contrast(gray, self.blurs[n] * eff)
-                img = (hatching.hatch(arr, n) if self.mode == "trazos"
+                img = (hatching.hatch(arr, n, self.outlines) if self.mode == "trazos"
                        else core.quantize(arr, n, self.mode))
             except Exception as e:
                 fail += 1
@@ -221,8 +222,8 @@ def paint_hatch(painter, hatch_img, target):
     pen = QPen(QColor(hatching.INK, hatching.INK, hatching.INK))
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
-    for layer in hatch_img.layers:
-        for pts, w in layer:
+    for layer, outline in zip(hatch_img.layers, hatch_img.outlines):
+        for pts, w in layer + outline:
             pen.setWidthF(w * k)
             painter.setPen(pen)
             painter.drawPolyline(QPolygonF(
@@ -421,7 +422,8 @@ INFO_TEXTS = {
         "<b>Sombreado cruzado: la sombra se construye con trazos</b>"
         "<ul style='margin:3px 0 3px -18px'>"
         "<li><b>El blanco es el papel:</b> se deja vacío. Solo se dibujan líneas.</li>"
-        "<li><b>Nivel 2:</b> una sola dirección de líneas paralelas, donde hay sombra.</li>"
+        "<li><b>Nivel 2:</b> una sola dirección de líneas paralelas, donde hay sombra, "
+        "y el contorno de esa zona.</li>"
         "<li><b>Cada nivel más</b> añade una dirección nueva que cruza las anteriores, "
         "solo dentro de las zonas más oscuras. Los trazos previos no cambian.</li></ul>"
         "<b>Cuantos más niveles, más juntas van las líneas</b> de las capas nuevas, "
@@ -676,6 +678,13 @@ class PosterizerApp(QWidget):
         self.prog.setChecked(True)
         self.prog.toggled.connect(self._prog_toggled)
         self._prog_toggled(True)
+        self.outline_chk = QCheckBox("Dibujar contornos de las formas")
+        self.outline_chk.setChecked(True)
+        self.outline_chk.setToolTip("Sombreado cruzado: cada nivel añade, además de los "
+                                    "trazos, el contorno de su zona de sombra.")
+        self.outline_chk.toggled.connect(self._params_changed)
+        og.addWidget(self.outline_chk, 11, 0, 1, 2)
+        self.outline_chk.setVisible(False)
         side.addWidget(opt)
         side.addStretch()
         side_w = QWidget()
@@ -958,6 +967,7 @@ class PosterizerApp(QWidget):
         self._levels_by_mode[level_group(self._cur_mode)] = set(self._selected_levels())
         self._cur_mode = mode
         self.info.set_mode(mode)
+        self.outline_chk.setVisible(mode == "trazos")
         top = MAX_LEVELS.get(mode, LEVEL_CHOICES[-1])
         wanted = self._levels_by_mode.get(level_group(mode), LEVEL_DEFAULTS[level_group(mode)])
         for n, cb in self.level_checks.items():
@@ -1012,7 +1022,7 @@ class PosterizerApp(QWidget):
             cap = f"{n} niveles"
             if self.prog.isChecked():
                 cap += f" · desenf. {blurs[n]:.1f}"
-            items.append((cap, core.quantize(arr, n, mode)))
+            items.append((cap, core.quantize(arr, n, mode, self.outline_chk.isChecked())))
         if self.include_gray.isChecked():   # el original va siempre al final
             items.append(("Original en grises", gray))
         if not items:
@@ -1090,7 +1100,7 @@ class PosterizerApp(QWidget):
         self.worker = ExportWorker(
             self.cropped, levels, self._blurs(), self.mode.currentData(),
             self.upscale.currentData(), folder, self.fmt.currentText(), self._base(),
-            self.include_gray.isChecked(), self._size_mm())
+            self.include_gray.isChecked(), self._size_mm(), self.outline_chk.isChecked())
         self.worker.progress.connect(
             lambda d, t: (self.progress.setMaximum(t), self.progress.setValue(d)))
         self.worker.log.connect(self.console.append)
