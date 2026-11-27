@@ -73,7 +73,6 @@ python app.py
 - `app.py` — interfaz (PyQt5): asistente de 4 pasos, exportación y PDF/impresión.
 - `cropwidget.py` — widget de recorte (mover, redimensionar, proporción fija).
 - `posterizer_core.py` — lógica de posterizado (sin interfaz).
-- `posterizer.py` — script original de línea de comandos (referencia).
 - `make_icon.py` — genera `assets/Posterizer.ico`.
 
 ## Modo «Sombras en capas»

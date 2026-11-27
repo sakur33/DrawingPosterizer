@@ -1,5 +1,5 @@
 """
-Lógica de posterizado (sin interfaz). Basada en posterizer.py.
+Lógica de posterizado (sin interfaz).
 
 Pipeline para cada exportación:
   recorte -> escala de grises -> ampliación (Lanczos) -> desenfoque
