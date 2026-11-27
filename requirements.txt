@@ -1,0 +1,5 @@
+PyQt5
+pillow
+pillow-heif
+numpy
+pyinstaller
