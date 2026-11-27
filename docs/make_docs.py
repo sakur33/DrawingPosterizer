@@ -204,9 +204,18 @@ def main():
     sheet(panels, 3).save(os.path.join(HERE, "capas_laminas.png"), optimize=True)
     print("ok capas_laminas")
 
+    # Sombreado cruzado: 8 láminas aditivas (cada una suma una capa a la anterior); se
+    # muestran la 2, 4, 6 y 8. Todas parten de la misma imagen, con el desenfoque mínimo.
+    total = 8
+    arr = core.blur_contrast(gray, 0.5)
+    panels = [(f"Sheet {n} of {total}",
+               core.hatch(arr, n + 1, outlines=True, total=total + 1).render())
+              for n in (2, 4, 6, 8)]
+    sheet(panels, 2).save(os.path.join(HERE, "trazos.png"), optimize=True)
+    print("ok trazos")
+
     jobs = {
         "capas": ([2, 4, 6, 8], lambda a, n: core.quantize(a, n, "capas")),
-        "trazos": ([2, 4, 6, 8], lambda a, n: hatching.hatch(a, n, outlines=True).render()),
         "cuantiles": ([3, 4, 5, 6], lambda a, n: core.quantize(a, n, "cuantiles")),
         "lineal": ([3, 4, 5, 6], lambda a, n: core.quantize(a, n, "lineal")),
     }

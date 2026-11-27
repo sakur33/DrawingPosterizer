@@ -159,7 +159,7 @@ class ExportWorker(QThread):
         for n in self.levels:
             try:
                 arr = core.blur_contrast(gray, self.blurs[n] * eff)
-                img = (hatching.hatch(arr, n, self.outlines) if self.mode == "trazos"
+                img = (core.hatch(arr, n, self.outlines, self.adaptive, max(self.levels)) if self.mode == "trazos"
                        else core.quantize(arr, n, self.mode, only_new=self.only_new,
                                           adaptive=self.adaptive, guide=max(self.levels)))
             except Exception as e:
@@ -171,7 +171,8 @@ class ExportWorker(QThread):
             name = core.output_name(self.base, n, self.blurs[n], self.mode,
                                     self.upscale, self.fmt, self.only_new)
             cap = (f"Lámina {n - 1} de {len(self.levels)}"
-                   if self.mode == "capas" and self.only_new else f"{n} niveles")
+                   if self.mode == "trazos" or (self.mode == "capas" and self.only_new)
+                   else f"{n} niveles")
             emit_one(cap, img, name)
         if self.include_gray:
             ofmt = "png" if self.fmt == "svg" else self.fmt   # el original no es vectorial
@@ -225,12 +226,12 @@ INSTRUCTIONS_HATCH = [
     ("title", "Sombreado cruzado"),
     ("text", "Cómo usar estas hojas para construir la sombra con trazos."),
     ("step", "1.  El blanco es el papel: déjalo vacío. Solo se dibujan trazos."),
-    ("step", "2.  Empieza por la hoja con menos niveles: rellena con líneas paralelas, "
-             "en la dirección que ves, las zonas con trazos. Es tu primera capa."),
-    ("step", "3.  En la hoja siguiente se conservan las zonas y los trazos de las "
-             "anteriores. No los cambies: cruza con una dirección nueva solo dentro de "
-             "las zonas más oscuras."),
-    ("step", "4.  Repite hasta el último nivel. Cuantas más capas se cruzan en un "
+    ("step", "2.  Empieza por la hoja 1: rellena con líneas paralelas, en la dirección que "
+             "ves, las zonas con trazos. Es tu primera capa."),
+    ("step", "3.  Cada hoja siguiente repite exactamente los trazos de la anterior y suma una "
+             "capa: cruza con una dirección distinta solo dentro de las zonas más oscuras "
+             "(las mismas sombras que en «Sombras en capas»). No cambies lo ya dibujado."),
+    ("step", "4.  Sigue hasta la última hoja. Cuantas más capas se cruzan en un "
              "sitio, más oscuro queda."),
 ]
 
@@ -445,13 +446,15 @@ INFO_TEXTS = {
         "<b>Sombreado cruzado: la sombra se construye con trazos</b>"
         "<ul style='margin:3px 0 3px -18px'>"
         "<li><b>El blanco es el papel:</b> se deja vacío. Solo se dibujan líneas.</li>"
-        "<li><b>Nivel 2:</b> una sola dirección de líneas paralelas, donde hay sombra, "
+        "<li><b>Lámina 1:</b> una sola dirección de líneas paralelas, donde hay sombra, "
         "y las líneas principales de los contornos (silueta, ojos, boca…).</li>"
-        "<li><b>Cada nivel más</b> añade una dirección nueva que cruza las anteriores, "
-        "solo dentro de las zonas más oscuras. Los trazos previos no cambian.</li></ul>"
-        "<b>Cuantos más niveles, más juntas van las líneas</b> de las capas nuevas, "
-        "así que cada nivel oscurece de verdad.<br>"
-        "<b>Uso:</b> dibuja primero las líneas del nivel 2 y ve cruzando encima.<br>"
+        "<li><b>Cada lámina más</b> añade una dirección nueva que cruza las anteriores, "
+        "solo dentro de las sombras aditivas del modo capas: las mismas zonas.</li></ul>"
+        "<b>Eliges cuántas láminas quieres</b> y se generan todas, de forma aditiva: cada "
+        "una repite los trazos de la anterior y suma una capa. Con pocas láminas las "
+        "líneas empiezan juntas; con muchas, más separadas y se van cerrando capa a capa "
+        "para que quepan todas.<br>"
+        "<b>Uso:</b> dibuja la lámina 1 y ve cruzando encima con cada lámina siguiente.<br>"
         "<span style='color:#777'>En «Salida» puedes guardar SVG vectorial, y el PDF "
         "lleva los trazos como vectores: nítidos a cualquier tamaño.</span>"),
     "cuantiles": (
@@ -650,7 +653,9 @@ class PosterizerApp(QWidget):
                                "por tono, de la más clara a la más oscura.")
         self.sheets.valueChanged.connect(self._params_changed)
         sg.addWidget(self.sheets)
-        sg.addWidget(QLabel("Una lámina por tono, de claro a oscuro."))
+        self.sheets_hint = QLabel()
+        self.sheets_hint.setWordWrap(True)
+        sg.addWidget(self.sheets_hint)
         side.addWidget(self.sheets_box)
         self.levels_box = box = QGroupBox("Niveles a generar")
         g = QGridLayout(box)
@@ -730,7 +735,7 @@ class PosterizerApp(QWidget):
         og.addWidget(self.new_chk, 12, 0, 1, 2)
         self.new_chk.setVisible(False)
         self.adapt_chk = QCheckBox("Niveles adaptados al detalle de la foto")
-        self.adapt_chk.setToolTip("Sombras en capas: reparte los umbrales donde la foto tiene más "
+        self.adapt_chk.setToolTip("Sombras en capas y sombreado cruzado: reparte los umbrales donde la foto tiene más "
                                   "detalle (p. ej. el pelo en una foto oscura) en vez de usar "
                                   "tonos fijos.")
         self.adapt_chk.toggled.connect(self._params_changed)
@@ -1044,26 +1049,36 @@ class PosterizerApp(QWidget):
         if self.prog.isChecked():
             mn = self.blur_min.value() / 10
             mx, mn = max(mx, mn), min(mx, mn)
-        return core.level_blurs(self._selected_levels(), mx, mn)
+        blurs = core.level_blurs(self._selected_levels(), mx, mn)
+        if self.mode.currentData() == "trazos" and blurs:
+            # láminas aditivas: todas parten de la misma imagen, así que las zonas no cambian
+            blurs = dict.fromkeys(blurs, blurs[max(blurs)])
+        return blurs
 
     def _checked_levels(self):
         return [n for n, cb in self.level_checks.items() if cb.isChecked()]
 
-    def _guided(self):
-        """Capas con una lámina por tono: se pide un solo número y se generan todas."""
-        return self.mode.currentData() == "capas" and self.new_chk.isChecked()
+    def _sheet_mode(self):
+        """Capas con una lámina por tono, o trazos (siempre aditivos): se pide un solo
+        número y se generan todas las láminas."""
+        mode = self.mode.currentData()
+        return mode == "trazos" or (mode == "capas" and self.new_chk.isChecked())
 
     def _selected_levels(self):
-        if self._guided():      # k láminas = k sombras = niveles 2..k+1
+        if self._sheet_mode():      # k láminas = k sombras/capas = niveles 2..k+1
             return list(range(2, self.sheets.value() + 2))
         return self._checked_levels()
 
     def _update_level_ui(self, *_):
         capas = self.mode.currentData() == "capas"
         self.new_chk.setVisible(capas)
-        self.adapt_chk.setVisible(capas)
-        self.sheets_box.setVisible(self._guided())
-        self.levels_box.setVisible(not self._guided())
+        self.adapt_chk.setVisible(capas or self.mode.currentData() == "trazos")
+        self.sheets_hint.setText(
+            "Cada lámina repite los trazos de la anterior y suma una capa nueva."
+            if self.mode.currentData() == "trazos"
+            else "Una lámina por tono, de claro a oscuro.")
+        self.sheets_box.setVisible(self._sheet_mode())
+        self.levels_box.setVisible(not self._sheet_mode())
 
     def _update_size_info(self, *_):
         if self.cropped is None:
@@ -1088,7 +1103,7 @@ class PosterizerApp(QWidget):
         items = []
         for n in self._selected_levels():
             arr = core.blur_contrast(gray, blurs[n] * self.preview_scale)
-            cap = f"Lámina {n - 1} de {self.sheets.value()}" if self._guided() else f"{n} niveles"
+            cap = f"Lámina {n - 1} de {self.sheets.value()}" if self._sheet_mode() else f"{n} niveles"
             if self.prog.isChecked():
                 cap += f" · desenf. {blurs[n]:.1f}"
             items.append((cap, core.quantize(arr, n, mode, self.outline_chk.isChecked(),

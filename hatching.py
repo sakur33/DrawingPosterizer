@@ -2,9 +2,11 @@
 Sombreado cruzado (crosshatching) en capas anidadas. Sin interfaz.
 
 Cada nivel nuevo añade UNA capa de trazos, en otra dirección, dentro de la zona
-más oscura que la anterior; los trazos de las capas previas no cambian. Las
-zonas se calculan por cuantiles de la propia foto (cada capa cubre un % fijo de
-la imagen), así que son las mismas en 2, 3, 4… niveles.
+más oscura que la anterior. Las zonas son las sombras ADITIVAS del modo «capas»
+(umbrales de gris que le pasa quien llama), así que cada capa cubre justo lo que
+ese nivel sombrearía allí. La separación de las líneas depende del nº total de
+niveles: con pocos, la primera capa va más apretada; con muchos, empieza más
+separada y se va cerrando para que quepan todos.
 
 Los trazos se generan como GEOMETRÍA (polilíneas), no como píxeles, de modo que
 la misma geometría sirve para:
@@ -23,14 +25,13 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 HATCH_MAX_LEVELS = 10                 # n niveles = n-1 capas de trazos
-# Una entrada por capa. Cada capa tiene su zona, dirección y separación FIJAS, así que
-# al subir de nivel solo se añade una capa nueva y las anteriores no cambian. Cuanto más
-# profunda la capa, más juntas van sus líneas (y algo más finas) para que cada nivel nuevo
-# oscurezca de verdad.
-COVER = [78, 60, 44, 31, 22, 15, 10, 6, 3]           # % más oscuro de la imagen que cubre
+# Una entrada por capa para la dirección. Cuanto más profunda la capa, más juntas van sus
+# líneas (y algo más finas) para que cada nivel nuevo oscurezca de verdad.
 ANGLES = [45, 135, 12, 102, 28, 118, 75, 160, 58]    # dirección de los trazos (grados)
-SPACING = [16, 15, 14, 13, 12, 10.5, 9, 8, 7]        # separación entre trazos (px de análisis)
-THICKNESS = [2.0, 2.0, 1.9, 1.8, 1.7, 1.5, 1.4, 1.3, 1.2]   # grosor (px de análisis)
+# Separación entre trazos (px de análisis): la capa 1 arranca en FIRST_BASE + FIRST_STEP por
+# cada capa extra que habrá en total, y la última capa siempre acaba en LAST_SPACING.
+FIRST_BASE, FIRST_STEP, LAST_SPACING = 10.0, 2.2, 7.0
+THICK_FIRST, THICK_LAST = 2.0, 1.2                   # grosor de la primera y la última capa
 WOBBLE = 2.2                          # cuánto serpentea el trazo (px de análisis)
 INK = 30                              # tono de la tinta (0 = negro)
 ANALYSIS_SIDE = 1080                  # lado mayor de referencia: todas las medidas de arriba
@@ -46,6 +47,16 @@ OUTLINE_MIN_LEN = 36.0                # contornos más cortos se descartan (px d
 # Fracción acumulada de la "importancia" total (longitud x fuerza) que ya está dibujada
 # en cada capa: la primera trae lo principal, las siguientes añaden lo fino.
 OUTLINE_FRAC = [0.34, 0.52, 0.66, 0.77, 0.85, 0.91, 0.95, 0.98, 1.0]
+
+
+def layer_spacings(layers):
+    """Separación de cada capa para un total de `layers` capas: de más abierta (la primera,
+    tanto más cuantas más capas haya) a LAST_SPACING en la última, en progresión geométrica."""
+    first = FIRST_BASE + FIRST_STEP * (layers - 1)
+    if layers == 1:
+        return [first]
+    r = (LAST_SPACING / first) ** (1 / (layers - 1))
+    return [first * r ** i for i in range(layers)]
 
 
 def _noise_field(seed, scale, aw, ah):
@@ -262,9 +273,14 @@ class HatchImage:
         return "\n".join(out)
 
 
-def hatch(arr, levels, outlines=False):
+def hatch(arr, levels, thresholds, outlines=False, total=None):
     """Array en gris (0-255, ya con autocontraste) -> HatchImage de `levels` niveles.
+    `thresholds` = umbrales de gris (de claro a oscuro, `levels`-1 como mínimo): la capa i
+    sombrea lo que sea más oscuro que thresholds[i] (las sombras aditivas del modo capas).
     Con `outlines` se dibujan además los contornos (bordes reales de la foto).
+    `total` = nº de niveles de la tirada completa (por defecto, `levels`): la separación y el
+    grosor de cada capa se calculan para ese total, así que las láminas de una misma tirada
+    (2, 3, … `total` niveles) son ADITIVAS: cada una repite los trazos de la anterior y suma una capa.
     Los trazos se calculan a min(1080, lado mayor) px: una vista previa pequeña es
     ligera y se ve igual que la exportación final."""
     if not 2 <= levels <= HATCH_MAX_LEVELS:
@@ -276,9 +292,13 @@ def hatch(arr, levels, outlines=False):
     aw, ah = max(1, round(w * k)), max(1, round(h * k))
     small = Image.fromarray(np.clip(arr, 0, 255).astype("uint8")).resize((aw, ah), Image.LANCZOS)
     gray = np.array(small.filter(ImageFilter.GaussianBlur(8 * u))).astype(np.float32)
+    n = levels - 1
+    tot = max(n, (total or levels) - 1)
+    spacing = layer_spacings(tot)
     layers = []
-    for i in range(levels - 1):
-        region = _clean_region(gray < np.percentile(gray, COVER[i]), u)
-        layers.append(_layer_strokes(region, ANGLES[i], SPACING[i], THICKNESS[i], i, aw, ah, u))
+    for i in range(n):
+        thick = THICK_FIRST + (THICK_LAST - THICK_FIRST) * (i / (tot - 1) if tot > 1 else 0)
+        region = _clean_region(gray < thresholds[i], u)
+        layers.append(_layer_strokes(region, ANGLES[i], spacing[i], thick, i, aw, ah, u))
     contours = _outline_layers(np.array(small, dtype=np.float32), levels, u) if outlines else None
     return HatchImage(w, h, aw, ah, layers, contours)

@@ -114,6 +114,19 @@ def adaptive_thresholds(arr, count=NESTED_MAX_LEVELS - 1):
     return out
 
 
+def nested_cuts(arr, levels, adaptive=False):
+    """Umbrales de gris de las `levels`-1 sombras aditivas del modo capas (fijos, o
+    adaptados al detalle de la foto). Los usa también el sombreado cruzado."""
+    thr = adaptive_thresholds(arr) if adaptive else NESTED_THRESHOLDS
+    return thr[:levels - 1]
+
+
+def hatch(arr, levels, outlines=False, adaptive=False, total=None):
+    """Sombreado cruzado (HatchImage) con las zonas de las sombras aditivas de 'capas'.
+    `total` = niveles de la tirada: las láminas de una misma tirada son aditivas."""
+    return hatching.hatch(arr, levels, nested_cuts(arr, levels, adaptive), outlines, total)
+
+
 def quantize_nested(arr, levels, only_new=False, adaptive=False):
     """Array en gris -> imagen PIL 'L' con sombras anidadas (modo 'capas').
     Con `only_new` solo se dibuja la sombra añadida en este nivel (la zona más oscura
@@ -160,7 +173,8 @@ def quantize(arr, levels, mode="cuantiles", outlines=False, only_new=False, adap
              guide=None):
     """Array en gris -> imagen PIL 'L' con exactamente `levels` tonos.
     Modo 'capas' con `only_new` y `guide` (nº total de niveles): la imagen sale en RGB con
-    una tira de tonos encima que marca el que toca pintar."""
+    una tira de tonos encima que marca el que toca pintar. En 'trazos', `guide` es el total
+    de la tirada, para que sus láminas sean aditivas."""
     if levels < 2:
         raise ValueError("El número de niveles debe ser al menos 2.")
     if mode == "capas":
@@ -169,7 +183,7 @@ def quantize(arr, levels, mode="cuantiles", outlines=False, only_new=False, adap
             img = add_tone_guide(img, levels, max(guide, levels))
         return img
     if mode == "trazos":
-        return hatching.hatch(arr, levels, outlines).render()
+        return hatch(arr, levels, outlines, adaptive, guide).render()
     if mode == "cuantiles":
         pct = np.linspace(0, 100, levels + 1)[1:-1]
         thresholds = np.percentile(arr, pct)

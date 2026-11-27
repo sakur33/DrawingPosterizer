@@ -32,8 +32,10 @@ image per level so you can compare a 3-value study with a 6-value one side by si
   on top marks the current one in red. Shadows are additive: you paint each sheet over
   the previous one. An in-app panel explains how to use it.
 - **Crosshatching** mode: shadows built from strokes. Each extra level (up to 10) adds a
-  new stroke direction that crosses the previous ones, only inside the darker zones,
-  with the lines getting closer together on deeper layers. Optionally it also draws
+  new stroke direction that crosses the previous ones, only inside the same additive
+  shadows as the layered mode. You pick one number of sheets and get them all, each one
+  repeating the strokes of the previous sheet and adding a layer. The line spacing adapts
+  to that number: few sheets start with tight lines, many start wider and close in layer by layer. Optionally it also draws
   the photo's real edges as clean line work (silhouette, eyelids, nose, mouth), ordered
   by importance: level 2 keeps only the main lines and each level adds finer ones.
   Save it as **vector SVG** and the PDF carries real strokes, sharp at any size.
@@ -70,13 +72,17 @@ for instance) instead of at fixed greys.
 
 ### Crosshatching
 
-Shadows built from strokes, up to 10 levels. Each level adds a new direction of lines
-that crosses the previous ones, only inside the darker zones, and the lines get closer
-together on deeper layers. Optional outlines draw the photo's real edges as clean line
+Shadows built from strokes, up to 9 sheets. You choose one number and the app makes every
+sheet, **additively**: each sheet repeats the strokes of the previous one and adds a new
+direction of lines that crosses them. The zones are exactly the additive shadows of the
+layered mode (the same grey cuts, or the detail-adapted ones). The spacing depends on how
+many sheets you ask for: with 2 the single layer is tight, with 9 the first layer starts
+wide and each new layer closes the lines until the last one, so there is room for every
+sheet. Draw sheet 1, then cross over it with each next sheet. Optional outlines draw the photo's real edges as clean line
 work, ordered by importance: level 2 keeps the main lines and each level adds finer
 ones. Save it as vector SVG, or print the PDF: the strokes are real vectors.
 
-![Crosshatching at 2, 4, 6 and 8 levels, with outlines](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/trazos.png)
+![Crosshatching, sheets 2, 4, 6 and 8 of 8, with outlines](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/trazos.png)
 
 ### Quantiles and Linear
 
@@ -162,12 +168,19 @@ gradiente local de la foto en vez de usar los fijos.
 ## Modo «Sombreado cruzado»
 
 Cuarto método (`trazos`, módulo `hatching.py`). Cada nivel (hasta 10) añade una capa de
-trazos en otra dirección dentro de la zona más oscura de la anterior, con las líneas
-cada vez más juntas en las capas profundas, y opcionalmente los contornos: los bordes reales
+trazos en otra dirección dentro de la zona más oscura de la anterior. Las zonas son las
+sombras aditivas del modo «capas» (`nested_cuts` en `posterizer_core.py`: los mismos
+umbrales, o los adaptados al detalle) y `hatching.hatch` las recibe como `thresholds`. La
+separación de las líneas depende del nº total de láminas (`layer_spacings`): la primera
+capa arranca más apretada con pocas y más abierta con muchas, y la última acaba siempre en
+`LAST_SPACING`. Como en «capas» con una hoja por tono, la app pide **un solo número** k y
+genera k láminas **aditivas**: la lámina j es `hatch(arr, j+1, total=k+1)`, es decir, las
+primeras j capas de la tirada (mismos trazos que la anterior + una capa). Todas parten de la
+misma imagen desenfocada (`_blurs` fuerza un único desenfoque) para que las zonas no
+cambien entre láminas. Opcionalmente los contornos: los bordes reales
 de la foto (silueta, párpados, nariz, boca), detectados como en un dibujo de línea y
 ordenados por importancia: el nivel 2 trae las líneas principales y cada nivel añade
-otras más finas; las zonas salen
-de cuantiles de la propia foto, así que son las mismas en todos los niveles. Los trazos
+otras más finas. Los trazos
 se generan como **geometría** (polilíneas), no como píxeles: de ahí salen la imagen
 (PNG/JPG), el **SVG** vectorial (una capa por nivel, a la medida elegida) y el PDF, que
 dibuja los trazos como vectores.
