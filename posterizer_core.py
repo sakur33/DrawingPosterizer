@@ -13,13 +13,15 @@ import os
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
+import hatching
+
 try:  # HEIC/HEIF (fotos de iPhone). Opcional.
     import pillow_heif
     pillow_heif.register_heif_opener()
 except Exception:
     pass
 
-MODES = {"cuantiles": "c", "lineal": "l", "capas": "s"}
+MODES = {"cuantiles": "c", "lineal": "l", "capas": "s", "trazos": "h"}
 
 # Modo "capas" (sombras anidadas). Blanco = papel vacío; solo se dibujan
 # sombras. Cada profundidad tiene un umbral y un tono FIJOS, así que subir de
@@ -108,6 +110,8 @@ def quantize(arr, levels, mode="cuantiles"):
         raise ValueError("El número de niveles debe ser al menos 2.")
     if mode == "capas":
         return quantize_nested(arr, levels)
+    if mode == "trazos":
+        return hatching.hatch(arr, levels).render()
     if mode == "cuantiles":
         pct = np.linspace(0, 100, levels + 1)[1:-1]
         thresholds = np.percentile(arr, pct)
@@ -126,9 +130,16 @@ def output_name(base, levels, blur, mode, upscale, ext):
     return name + "." + ext.lstrip(".")
 
 
-def save_image(img, path, fmt, dpi=None):
-    """Guarda la imagen. Con `dpi` queda registrada la medida física al imprimir."""
+def save_image(img, path, fmt, dpi=None, size_mm=None):
+    """Guarda la imagen. Con `dpi` queda registrada la medida física al imprimir.
+    Un HatchImage (sombreado cruzado) también puede guardarse como SVG vectorial."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    if isinstance(img, hatching.HatchImage):
+        if fmt.lower() == "svg":
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(img.to_svg(size_mm))
+            return
+        img = img.render()
     extra = {"dpi": (dpi, dpi)} if dpi else {}
     if fmt.lower() in ("jpg", "jpeg"):
         img.save(path, quality=95, **extra)
