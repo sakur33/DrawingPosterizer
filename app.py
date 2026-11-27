@@ -16,7 +16,7 @@ from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider,
+    QMessageBox, QProgressBar, QPushButton, QScrollArea, QSlider, QSpinBox,
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -45,6 +45,8 @@ CAPAS_LEVELS = {2, 4, 6, 8}    # niveles por defecto (método «Sombras en capas
 DEFAULT_LEVELS = CAPAS_LEVELS
 TRAZOS_LEVELS = {2, 4, 6, 8}   # niveles por defecto del sombreado cruzado
 LEVEL_DEFAULTS = {"capas": CAPAS_LEVELS, "trazos": TRAZOS_LEVELS, "otros": OTHER_LEVELS}
+NESTED_SHEETS_MAX = core.NESTED_MAX_LEVELS - 1   # láminas = sombras = niveles - 1
+NESTED_SHEETS_DEFAULT = 6
 MAX_LEVELS = {"trazos": hatching.HATCH_MAX_LEVELS}   # tope de niveles por método
 
 
@@ -108,7 +110,8 @@ class ExportWorker(QThread):
     finished_all = pyqtSignal(list, int, int)   # resultados, ok, fallos
 
     def __init__(self, img, levels, blurs, mode, upscale, folder, fmt, base,
-                 include_gray, size_mm=None, outlines=False):
+                 include_gray, size_mm=None, outlines=False, only_new=False,
+                 adaptive=False):
         super().__init__()
         self.img, self.levels, self.blurs = img, sorted(levels), blurs
         self.mode, self.upscale = mode, upscale
@@ -116,6 +119,8 @@ class ExportWorker(QThread):
         self.include_gray = include_gray
         self.size_mm = size_mm      # (ancho, alto) en mm de cada imagen, o None
         self.outlines = outlines    # sombreado cruzado: dibujar también los contornos
+        self.only_new = only_new    # capas: cada nivel dibuja solo lo que añade
+        self.adaptive = adaptive    # capas: umbrales según dónde hay detalle
 
     def run(self):
         results, ok, fail = [], 0, 0
@@ -155,7 +160,8 @@ class ExportWorker(QThread):
             try:
                 arr = core.blur_contrast(gray, self.blurs[n] * eff)
                 img = (hatching.hatch(arr, n, self.outlines) if self.mode == "trazos"
-                       else core.quantize(arr, n, self.mode))
+                       else core.quantize(arr, n, self.mode, only_new=self.only_new,
+                                          adaptive=self.adaptive, guide=max(self.levels)))
             except Exception as e:
                 fail += 1
                 done += 1
@@ -163,8 +169,10 @@ class ExportWorker(QThread):
                 self.progress.emit(done, total)
                 continue
             name = core.output_name(self.base, n, self.blurs[n], self.mode,
-                                    self.upscale, self.fmt)
-            emit_one(f"{n} niveles", img, name)
+                                    self.upscale, self.fmt, self.only_new)
+            cap = (f"Lámina {n - 1} de {len(self.levels)}"
+                   if self.mode == "capas" and self.only_new else f"{n} niveles")
+            emit_one(cap, img, name)
         if self.include_gray:
             ofmt = "png" if self.fmt == "svg" else self.fmt   # el original no es vectorial
             emit_one("Original en grises", gray,
@@ -196,6 +204,20 @@ INSTRUCTIONS = [
     ("step", "4.  Repite hasta el último nivel. Así cada sombra se queda con su tono y "
              "ves cuántos escalones de oscuridad hay."),
     ("head", "Tonos de cada nivel (de papel a sombra más oscura)"),
+]
+
+
+INSTRUCTIONS_GUIDE = [
+    ("title", "Sombras en capas"),
+    ("text", "Cómo usar estas hojas: una hoja por tono, sin oscurecer de más."),
+    ("step", "1.  El blanco es el papel: déjalo vacío. Solo se dibujan sombras."),
+    ("step", "2.  Encima de cada hoja hay una tira con todos los tonos, de papel a la "
+             "sombra más oscura. El tono marcado en rojo es el que toca pintar en esa hoja."),
+    ("step", "3.  Pinta con ese tono todas las zonas que ves coloreadas en la hoja. "
+             "Incluye las que luego serán más oscuras: las sombras son aditivas."),
+    ("step", "4.  Pasa a la hoja siguiente y repite con el tono marcado. Pinta siempre "
+             "encima de lo anterior: cada zona acaba con el tono de la última hoja en que "
+             "aparece."),
 ]
 
 
@@ -239,7 +261,8 @@ def paint_instructions(painter, printer, levels, kind="capas"):
     width = page.width() - 2 * margin
     y = margin
     flags = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
-    texts = INSTRUCTIONS if kind == "capas" else INSTRUCTIONS_HATCH
+    texts = {"capas": INSTRUCTIONS, "capas_guia": INSTRUCTIONS_GUIDE}.get(
+        kind, INSTRUCTIONS_HATCH)
     for item_kind, text in texts:
         f = QFont()
         f.setPointSizeF({"title": 20, "head": 12}.get(item_kind, 11))
@@ -250,7 +273,7 @@ def paint_instructions(painter, printer, levels, kind="capas"):
         rect = painter.boundingRect(QRectF(margin, y, width, page.height()), flags, text)
         painter.drawText(rect, flags, text)
         y = rect.bottom() + (3 if item_kind in ("step", "text") else 2) * mm
-    if kind != "capas":
+    if kind != "capas":     # trazos y capas con guía: la tira ya va en cada hoja
         return
     f = QFont()
     f.setPointSizeF(10)
@@ -617,7 +640,18 @@ class PosterizerApp(QWidget):
         lay = QHBoxLayout(w)
 
         side = QVBoxLayout()
-        box = QGroupBox("Niveles a generar")
+        self.sheets_box = QGroupBox("Láminas a generar")
+        sg = QVBoxLayout(self.sheets_box)
+        self.sheets = QSpinBox()
+        self.sheets.setRange(1, NESTED_SHEETS_MAX)
+        self.sheets.setValue(NESTED_SHEETS_DEFAULT)
+        self.sheets.setToolTip("Sombras en capas: nº de tonos a pintar. Se genera una lámina "
+                               "por tono, de la más clara a la más oscura.")
+        self.sheets.valueChanged.connect(self._params_changed)
+        sg.addWidget(self.sheets)
+        sg.addWidget(QLabel("Una lámina por tono, de claro a oscuro."))
+        side.addWidget(self.sheets_box)
+        self.levels_box = box = QGroupBox("Niveles a generar")
         g = QGridLayout(box)
         self.level_checks = {}
         for i, n in enumerate(LEVEL_CHOICES):
@@ -685,7 +719,24 @@ class PosterizerApp(QWidget):
         self.outline_chk.toggled.connect(self._params_changed)
         og.addWidget(self.outline_chk, 11, 0, 1, 2)
         self.outline_chk.setVisible(False)
+        self.new_chk = QCheckBox("Una hoja por tono, con guía de tonos")
+        self.new_chk.setChecked(True)
+        self.new_chk.setToolTip("Sombras en capas: cada nivel muestra solo el tono que toca pintar "
+                                "ahora (las sombras son aditivas) y, encima, la tira con todos los "
+                                "tonos con el actual marcado en rojo.")
+        self.new_chk.toggled.connect(self._update_level_ui)
+        self.new_chk.toggled.connect(self._params_changed)
+        og.addWidget(self.new_chk, 12, 0, 1, 2)
+        self.new_chk.setVisible(False)
+        self.adapt_chk = QCheckBox("Niveles adaptados al detalle de la foto")
+        self.adapt_chk.setToolTip("Sombras en capas: reparte los umbrales donde la foto tiene más "
+                                  "detalle (p. ej. el pelo en una foto oscura) en vez de usar "
+                                  "tonos fijos.")
+        self.adapt_chk.toggled.connect(self._params_changed)
+        og.addWidget(self.adapt_chk, 13, 0, 1, 2)
+        self.adapt_chk.setVisible(False)
         side.addWidget(opt)
+        self._update_level_ui()
         side.addStretch()
         side_w = QWidget()
         side_w.setLayout(side)
@@ -964,10 +1015,11 @@ class PosterizerApp(QWidget):
 
     def _mode_changed(self, *_):
         mode = self.mode.currentData()
-        self._levels_by_mode[level_group(self._cur_mode)] = set(self._selected_levels())
+        self._levels_by_mode[level_group(self._cur_mode)] = set(self._checked_levels())
         self._cur_mode = mode
         self.info.set_mode(mode)
         self.outline_chk.setVisible(mode == "trazos")
+        self._update_level_ui()
         top = MAX_LEVELS.get(mode, LEVEL_CHOICES[-1])
         wanted = self._levels_by_mode.get(level_group(mode), LEVEL_DEFAULTS[level_group(mode)])
         for n, cb in self.level_checks.items():
@@ -993,8 +1045,24 @@ class PosterizerApp(QWidget):
             mx, mn = max(mx, mn), min(mx, mn)
         return core.level_blurs(self._selected_levels(), mx, mn)
 
-    def _selected_levels(self):
+    def _checked_levels(self):
         return [n for n, cb in self.level_checks.items() if cb.isChecked()]
+
+    def _guided(self):
+        """Capas con una lámina por tono: se pide un solo número y se generan todas."""
+        return self.mode.currentData() == "capas" and self.new_chk.isChecked()
+
+    def _selected_levels(self):
+        if self._guided():      # k láminas = k sombras = niveles 2..k+1
+            return list(range(2, self.sheets.value() + 2))
+        return self._checked_levels()
+
+    def _update_level_ui(self, *_):
+        capas = self.mode.currentData() == "capas"
+        self.new_chk.setVisible(capas)
+        self.adapt_chk.setVisible(capas)
+        self.sheets_box.setVisible(self._guided())
+        self.levels_box.setVisible(not self._guided())
 
     def _update_size_info(self, *_):
         if self.cropped is None:
@@ -1019,10 +1087,13 @@ class PosterizerApp(QWidget):
         items = []
         for n in self._selected_levels():
             arr = core.blur_contrast(gray, blurs[n] * self.preview_scale)
-            cap = f"{n} niveles"
+            cap = f"Lámina {n - 1} de {self.sheets.value()}" if self._guided() else f"{n} niveles"
             if self.prog.isChecked():
                 cap += f" · desenf. {blurs[n]:.1f}"
-            items.append((cap, core.quantize(arr, n, mode, self.outline_chk.isChecked())))
+            items.append((cap, core.quantize(arr, n, mode, self.outline_chk.isChecked(),
+                                                self.new_chk.isChecked(),
+                                                self.adapt_chk.isChecked(),
+                                                max(self._selected_levels()))))
         if self.include_gray.isChecked():   # el original va siempre al final
             items.append(("Original en grises", gray))
         if not items:
@@ -1100,7 +1171,8 @@ class PosterizerApp(QWidget):
         self.worker = ExportWorker(
             self.cropped, levels, self._blurs(), self.mode.currentData(),
             self.upscale.currentData(), folder, self.fmt.currentText(), self._base(),
-            self.include_gray.isChecked(), self._size_mm(), self.outline_chk.isChecked())
+            self.include_gray.isChecked(), self._size_mm(), self.outline_chk.isChecked(),
+            self.new_chk.isChecked(), self.adapt_chk.isChecked())
         self.worker.progress.connect(
             lambda d, t: (self.progress.setMaximum(t), self.progress.setValue(d)))
         self.worker.log.connect(self.console.append)
@@ -1117,6 +1189,8 @@ class PosterizerApp(QWidget):
         paper = "A4" if self.paper.currentIndex() == 0 else "Carta"
         size = self._size_mm()
         w, h = results[0][1].size
+        if size:    # la guía de tonos hace la imagen más alta: la foto conserva su ancho
+            size = (size[0], size[0] * h / w)
         subtitle = f"Posterizer · {self._base()} · {w}×{h} px"
 
         msg = f"{ok} correctas, {fail} fallidas."
@@ -1133,6 +1207,9 @@ class PosterizerApp(QWidget):
                  if self.mode.currentData() in ("capas", "trazos")
                  and self.chk_instr.isChecked()
                  else None)
+        kind = self.mode.currentData()
+        if kind == "capas" and self.new_chk.isChecked():
+            kind = "capas_guia"
         shrunk = False
         pdf_file = None
         try:
@@ -1142,8 +1219,7 @@ class PosterizerApp(QWidget):
                 pr = make_printer(landscape, paper)
                 if QPrintDialog(pr, self).exec_() != QDialog.Accepted:
                     return
-                shrunk = paint_pages(pr, results, subtitle, layout, instr, size,
-                                     self.mode.currentData())
+                shrunk = paint_pages(pr, results, subtitle, layout, instr, size, kind)
                 self.console.append("✓ Enviado a la impresora.")
             else:
                 path = self.pdf_path.text().strip()
@@ -1151,8 +1227,7 @@ class PosterizerApp(QWidget):
                 pr = make_printer(landscape, paper)
                 pr.setOutputFormat(QPrinter.PdfFormat)
                 pr.setOutputFileName(path)
-                shrunk = paint_pages(pr, results, subtitle, layout, instr, size,
-                                     self.mode.currentData())
+                shrunk = paint_pages(pr, results, subtitle, layout, instr, size, kind)
                 pdf_file = path
                 self.console.append(f"✓ PDF: {path}")
             if size and shrunk:

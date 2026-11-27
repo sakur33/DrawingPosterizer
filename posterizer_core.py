@@ -11,7 +11,7 @@ masas tonales salen suaves y limpios en vez de escalonados.
 import os
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 import hatching
 
@@ -94,22 +94,80 @@ def nested_tones(levels):
     return [255] + NESTED_TONES[:levels - 1]
 
 
-def quantize_nested(arr, levels):
-    """Array en gris -> imagen PIL 'L' con sombras anidadas (modo 'capas')."""
+def adaptive_thresholds(arr, count=NESTED_MAX_LEVELS - 1):
+    """Umbrales (de claro a oscuro) repartidos según DÓNDE HAY DETALLE: cada tono de la
+    imagen pesa por el contraste local que tiene (gradiente), así que se agrupan donde
+    la foto tiene textura (p. ej. el pelo en una foto oscura) y no en zonas lisas.
+    Son fijos para la imagen: no dependen del nº de niveles, así que siguen anidados."""
+    gy, gx = np.gradient(arr.astype(np.float32))
+    mag = np.hypot(gx, gy).ravel()
+    bins = np.clip(arr.ravel().astype(int), 0, 255)
+    mass = np.bincount(bins, weights=mag, minlength=256) + 1e-6
+    cum = np.cumsum(mass[::-1])                 # índice 0 = tono 255
+    cum /= cum[-1]
+    out, last = [], 256
+    for i in range(count):
+        t = 255 - int(np.searchsorted(cum, (i + 1) / (count + 1)))
+        t = min(t, last - 4)                    # estrictamente decreciente
+        out.append(max(t, 1))
+        last = out[-1]
+    return out
+
+
+def quantize_nested(arr, levels, only_new=False, adaptive=False):
+    """Array en gris -> imagen PIL 'L' con sombras anidadas (modo 'capas').
+    Con `only_new` solo se dibuja la sombra añadida en este nivel (la zona más oscura
+    que la del nivel anterior), con su mismo tono: así se ve qué cambia al subir."""
     if not 2 <= levels <= NESTED_MAX_LEVELS:
         raise ValueError(f"El modo capas admite de 2 a {NESTED_MAX_LEVELS} niveles.")
     out = np.full(arr.shape, 255, dtype=np.uint8)
-    for t, tone in zip(NESTED_THRESHOLDS[:levels - 1], NESTED_TONES):
+    thr = adaptive_thresholds(arr) if adaptive else NESTED_THRESHOLDS
+    steps = list(zip(thr[:levels - 1], NESTED_TONES))
+    if only_new:
+        steps = steps[-1:]
+    for t, tone in steps:
         out[arr < t] = tone
     return Image.fromarray(out, mode="L")
 
 
-def quantize(arr, levels, mode="cuantiles", outlines=False):
-    """Array en gris -> imagen PIL 'L' con exactamente `levels` tonos."""
+def add_tone_guide(img, level, total):
+    """Añade encima de `img` una tira con el rango completo de tonos del modo 'capas'
+    (papel + `total`-1 sombras) y marca en rojo el que se pinta en el nivel `level`.
+    Devuelve una imagen RGB más alta que la original."""
+    tones = nested_tones(total)
+    w, h = img.size
+    bar = max(28, round(w * 0.14))
+    out = Image.new("RGB", (w, h + bar), (255, 255, 255))
+    out.paste(img.convert("RGB"), (0, bar))
+    d = ImageDraw.Draw(out)
+    pad = max(2, bar // 9)
+    cw = (w - 2 * pad) / len(tones)
+    top, bot = pad, bar - 2 * pad - pad
+    for k, t in enumerate(tones):
+        x0 = pad + k * cw
+        box = [x0 + pad // 2, top, x0 + cw - pad, bot]
+        d.rectangle(box, fill=(t, t, t), outline=(120, 120, 120))
+        if k == level - 1:
+            d.rectangle([box[0] - pad, box[1] - pad, box[2] + pad, box[3] + pad],
+                        outline=(230, 40, 40), width=max(2, pad))
+            cx = (box[0] + box[2]) / 2
+            d.polygon([(cx - pad * 1.3, bot + pad * 1.6), (cx + pad * 1.3, bot + pad * 1.6),
+                       (cx, bar - 1)], fill=(230, 40, 40))
+    return out
+
+
+def quantize(arr, levels, mode="cuantiles", outlines=False, only_new=False, adaptive=False,
+             guide=None):
+    """Array en gris -> imagen PIL 'L' con exactamente `levels` tonos.
+    Modo 'capas' con `only_new` y `guide` (nº total de niveles): la imagen sale en RGB con
+    una tira de tonos encima que marca el que toca pintar."""
     if levels < 2:
         raise ValueError("El número de niveles debe ser al menos 2.")
     if mode == "capas":
-        return quantize_nested(arr, levels)
+        img = quantize_nested(arr, levels, only_new, adaptive)
+        if only_new and guide:
+            img = add_tone_guide(img, levels, max(guide, levels))
+        return img
     if mode == "trazos":
         return hatching.hatch(arr, levels, outlines).render()
     if mode == "cuantiles":
@@ -122,9 +180,11 @@ def quantize(arr, levels, mode="cuantiles", outlines=False):
     return Image.fromarray(out, mode="L")
 
 
-def output_name(base, levels, blur, mode, upscale, ext):
+def output_name(base, levels, blur, mode, upscale, ext, only_new=False):
     """Mismo esquema que el script original, más el factor de ampliación."""
     name = f"{base}_n{levels:02d}_b{blur:.1f}_m{MODES[mode]}"
+    if only_new and mode == "capas":
+        name += "_nuevo"
     if upscale > 1:
         name += f"_x{upscale:g}"
     return name + "." + ext.lstrip(".")
