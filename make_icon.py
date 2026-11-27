@@ -1,10 +1,11 @@
-"""Genera assets/Posterizer.ico (multi-resolución) dibujando con Pillow.
+"""Genera assets/Posterizer.ico (Windows) y assets/Posterizer.icns (macOS) con Pillow.
 Icono: un degradado de grises en 4 bandas tonales sobre fondo redondeado."""
 import os
 from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ICO = os.path.join(HERE, "assets", "Posterizer.ico")
+ICNS = os.path.join(HERE, "assets", "Posterizer.icns")
 SIZES = [16, 24, 32, 48, 64, 128, 256]
 TONES = [30, 95, 165, 235]
 
@@ -29,3 +30,5 @@ if __name__ == "__main__":
     os.makedirs(os.path.dirname(ICO), exist_ok=True)
     render(256).save(ICO, format="ICO", sizes=[(n, n) for n in SIZES])
     print(f"[make_icon] Icono escrito en: {ICO}")
+    render(1024).save(ICNS, format="ICNS")
+    print(f"[make_icon] Icono escrito en: {ICNS}")
