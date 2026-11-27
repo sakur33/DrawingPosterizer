@@ -470,7 +470,8 @@ class InfoWidget(QFrame):
         super().__init__()
         self.setObjectName("info")
         self.setStyleSheet("#info{background:#f3f7fc;border:1px solid #c9d9ee;"
-                           "border-radius:8px;}")
+                           "border-radius:8px;}"
+                           "#info QLabel{color:#1f2933;}")
         lay = QVBoxLayout(self)
         self.toggle = QPushButton()
         self.toggle.setCheckable(True)
