@@ -32,8 +32,9 @@ image per level so you can compare a 3-value study with a 6-value one side by si
   6-level versions without redoing anything. An in-app panel explains how to use it.
 - **Crosshatching** mode: shadows built from strokes. Each extra level (up to 10) adds a
   new stroke direction that crosses the previous ones, only inside the darker zones,
-  with the lines getting closer together on deeper layers. Optionally each layer also
-  draws the outline of its shadow zone, giving the silhouette of the features.
+  with the lines getting closer together on deeper layers. Optionally it also draws
+  the photo's real edges as clean line work (silhouette, eyelids, nose, mouth), ordered
+  by importance: level 2 keeps only the main lines and each level adds finer ones.
   Save it as **vector SVG** and the PDF carries real strokes, sharp at any size.
 - **Upscale** up to x4 before posterizing, so edges between masses come out smooth
   and you can print large to draw from.
@@ -94,8 +95,10 @@ sombras, de 2 a 10). La ventana de niveles incluye un panel «¿Cómo funciona?�
 
 Cuarto método (`trazos`, módulo `hatching.py`). Cada nivel (hasta 10) añade una capa de
 trazos en otra dirección dentro de la zona más oscura de la anterior, con las líneas
-cada vez más juntas en las capas profundas, y opcionalmente el contorno de esa zona
-(la silueta de los rasgos); las zonas salen
+cada vez más juntas en las capas profundas, y opcionalmente los contornos: los bordes reales
+de la foto (silueta, párpados, nariz, boca), detectados como en un dibujo de línea y
+ordenados por importancia: el nivel 2 trae las líneas principales y cada nivel añade
+otras más finas; las zonas salen
 de cuantiles de la propia foto, así que son las mismas en todos los niveles. Los trazos
 se generan como **geometría** (polilíneas), no como píxeles: de ahí salen la imagen
 (PNG/JPG), el **SVG** vectorial (una capa por nivel, a la medida elegida) y el PDF, que

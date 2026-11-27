@@ -8,8 +8,10 @@ la imagen), así que son las mismas en 2, 3, 4… niveles.
 
 Los trazos se generan como GEOMETRÍA (polilíneas), no como píxeles, de modo que
 la misma geometría sirve para:
-Opcionalmente cada capa añade también el CONTORNO de su zona (el borde entre la sombra
-y la luz), que da la silueta de los rasgos: ojos, nariz, boca, cabeza.
+Opcionalmente se dibujan también CONTORNOS: los bordes reales de la foto (silueta de la
+cabeza, párpados, nariz, boca…) detectados como en un dibujo de línea. Se ordenan por
+importancia: el nivel 2 trae solo las líneas principales y cada nivel añade otras más
+finas, sin cambiar las anteriores.
 
   - HatchImage.render()  -> imagen PIL en gris a cualquier resolución
   - HatchImage.to_svg()  -> SVG vectorial
@@ -36,9 +38,14 @@ ANALYSIS_SIDE = 1080                  # lado mayor de referencia: todas las medi
 STEP = 4.0                            # paso de muestreo a lo largo del trazo
 MIN_LEN = 12.0                        # trazos más cortos se descartan
 CLEAN = 9                             # tamaño del filtro que limpia las zonas
-OUTLINE_THICK = 2.6                   # grosor del contorno (px de análisis)
-OUTLINE_SMOOTH = 2.0                  # suavizado de la zona antes de sacar el contorno
-OUTLINE_MIN_LEN = 40.0                # contornos más cortos se descartan (px de análisis)
+OUTLINE_THICK = 2.4                   # grosor base del contorno (px de análisis)
+EDGE_SIGMA = 1.6                      # suavizado antes de detectar bordes (px de análisis)
+EDGE_HIGH = 96.0                      # percentil de fuerza: un borde debe llegar a este valor...
+EDGE_LOW = 88.0                       # ...y se sigue mientras supere este otro (histéresis)
+OUTLINE_MIN_LEN = 36.0                # contornos más cortos se descartan (px de análisis)
+# Fracción acumulada de la "importancia" total (longitud x fuerza) que ya está dibujada
+# en cada capa: la primera trae lo principal, las siguientes añaden lo fino.
+OUTLINE_FRAC = [0.34, 0.52, 0.66, 0.77, 0.85, 0.91, 0.95, 0.98, 1.0]
 
 
 def _noise_field(seed, scale, aw, ah):
@@ -70,83 +77,99 @@ def _clean_region(mask, u):
     return np.array(m) > 127
 
 
-# Marching squares: pares de bordes (T=arriba, R=derecha, B=abajo, L=izquierda) que cruza
-# el contorno en cada caso de las 4 esquinas (a=sup.izq, b=sup.der, c=inf.der, d=inf.izq).
-_EDGES = {1: [("L", "B")], 2: [("B", "R")], 3: [("L", "R")], 4: [("T", "R")],
-          6: [("T", "B")], 7: [("T", "L")], 8: [("T", "L")], 9: [("T", "B")],
-          11: [("T", "R")], 12: [("L", "R")], 13: [("B", "R")], 14: [("L", "B")]}
+def _edge_chains(g, u):
+    """Bordes de la imagen en gris `g` como cadenas (pts, importancia, fuerza media).
+    Detección tipo Canny: gradiente, supresión de no-máximos (líneas de 1 px) e histéresis."""
+    h, w = g.shape
+    g = np.array(Image.fromarray(np.clip(g, 0, 255).astype("uint8")).filter(
+        ImageFilter.GaussianBlur(max(1.0, EDGE_SIGMA * u)))).astype(np.float32)
+    gy, gx = np.gradient(g)
+    mag = np.hypot(gx, gy)
+    ang = (np.rad2deg(np.arctan2(gy, gx)) + 180.0) % 180.0
+    mp = np.pad(mag, 1)
 
+    def sh(dy, dx):
+        return mp[1 + dy:1 + dy + h, 1 + dx:1 + dx + w]
 
-def _trace_contours(f, level=0.5):
-    """Contornos de nivel `level` del campo `f` como polilíneas (lista de arrays (n,2) x,y)."""
-    h, w = f.shape
-    a, b, c, d = f[:-1, :-1], f[:-1, 1:], f[1:, 1:], f[1:, :-1]
-    idx = ((a > level) * 8 + (b > level) * 4 + (c > level) * 2 + (d > level) * 1)
-    ys, xs = np.nonzero((idx > 0) & (idx < 15))
-    adj = defaultdict(list)
-    for y, x in zip(ys.tolist(), xs.tolist()):
-        case = int(idx[y, x])
-        if case in (5, 10):                      # punto de silla: decide el centro
-            hi = (a[y, x] + b[y, x] + c[y, x] + d[y, x]) / 4 > level
-            if (case == 5) == hi:
-                pairs = [("T", "L"), ("B", "R")]
-            else:
-                pairs = [("T", "R"), ("L", "B")]
-        else:
-            pairs = _EDGES[case]
-        k = y * w + x
-        ids = {"T": 2 * k, "B": 2 * (k + w), "L": 2 * k + 1, "R": 2 * (k + 1) + 1}
-        for e1, e2 in pairs:
-            i1, i2 = ids[e1], ids[e2]
-            adj[i1].append(i2)
-            adj[i2].append(i1)
+    keep = np.zeros((h, w), bool)
+    for lo, hi, (dy, dx) in ((0, 22.5, (0, 1)), (22.5, 67.5, (1, 1)),
+                             (67.5, 112.5, (1, 0)), (112.5, 157.5, (1, -1)),
+                             (157.5, 180.1, (0, 1))):
+        sel = (ang >= lo) & (ang < hi)
+        keep |= sel & (mag >= sh(dy, dx)) & (mag >= sh(-dy, -dx))
+    high, low = np.percentile(mag, EDGE_HIGH), np.percentile(mag, EDGE_LOW)
+    ys, xs = np.nonzero(keep & (mag >= low))
+    pix = set(zip(ys.tolist(), xs.tolist()))
+    nbrs = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
+    adj = {p: [(p[0] + dy, p[1] + dx) for dy, dx in nbrs if (p[0] + dy, p[1] + dx) in pix]
+           for p in pix}
 
-    def point(eid):
-        k, vert = eid >> 1, eid & 1
-        y, x = divmod(k, w)
-        if vert:                                  # arista vertical (y,x)-(y+1,x)
-            return (x, y + (level - f[y, x]) / (f[y + 1, x] - f[y, x]))
-        return (x + (level - f[y, x]) / (f[y, x + 1] - f[y, x]), y)
-
-    visited, chains = set(), []
-    ends = [k for k, v in adj.items() if len(v) == 1]        # contornos abiertos primero
-    for start in ends + list(adj):
-        if start in visited:
+    seen, chains = set(), []
+    for root in pix:                                # componentes conexas
+        if root in seen:
             continue
-        chain, cur = [start], start
-        visited.add(start)
-        while True:
-            nxt = [n for n in adj[cur] if n not in visited]
-            if not nxt:
-                break
-            cur = nxt[0]
-            chain.append(cur)
-            visited.add(cur)
-        if len(chain) > 2 and chain[0] in adj[chain[-1]]:    # contorno cerrado
-            chain.append(chain[0])
-        chains.append(np.array([point(e) for e in chain], dtype=np.float32))
+        comp, stack = [], [root]
+        seen.add(root)
+        while stack:
+            q = stack.pop()
+            comp.append(q)
+            for n in adj[q]:
+                if n not in seen:
+                    seen.add(n)
+                    stack.append(n)
+        if max(mag[q] for q in comp) < high:        # histéresis: debe tener un punto fuerte
+            continue
+        visited = set()
+        order = [q for q in comp if len(adj[q]) == 1] + comp   # empezar por los extremos
+        for st in order:
+            if st in visited:
+                continue
+            path, cur, prev = [st], st, None
+            visited.add(st)
+            while True:
+                cand = [n for n in adj[cur] if n not in visited]
+                if not cand:
+                    break
+                if prev is not None:                # seguir recto si se puede
+                    d0 = (cur[0] - prev[0], cur[1] - prev[1])
+                    cand.sort(key=lambda n: -((n[0] - cur[0]) * d0[0] + (n[1] - cur[1]) * d0[1]))
+                prev, cur = cur, cand[0]
+                path.append(cur)
+                visited.add(cur)
+            if len(path) < 4:
+                continue
+            pts = np.array([(x, y) for y, x in path], dtype=np.float32)
+            length = float(np.hypot(*np.diff(pts, axis=0).T).sum())
+            if length < OUTLINE_MIN_LEN * u:
+                continue
+            strength = float(np.mean([mag[q] for q in path]))
+            chains.append((pts, length * strength, strength))
     return chains
 
 
-def _outline_strokes(region, u):
-    """Contorno de una zona como trazos (pts, grosor), ya suavizado y sin fragmentos."""
-    m = Image.fromarray((region * 255).astype("uint8"))
-    f = np.array(m.filter(ImageFilter.GaussianBlur(max(1.0, OUTLINE_SMOOTH * u)))
-                 ).astype(np.float32) / 255.0
-    strokes = []
-    for pts in _trace_contours(f):
-        if len(pts) < 4:
+def _outline_layers(small, levels, u):
+    """Contornos por capa: la capa i recibe las cadenas de su 'escalón' de importancia."""
+    chains = sorted(_edge_chains(small, u), key=lambda c: -c[1])
+    out = [[] for _ in range(levels - 1)]
+    if not chains:
+        return out
+    total = sum(c[1] for c in chains)
+    peak = max(c[2] for c in chains)
+    cum = 0.0
+    for pts, score, strength in chains:
+        tier = next(i for i, f in enumerate(OUTLINE_FRAC) if cum / total < f)
+        cum += score
+        if tier >= levels - 1:
             continue
-        length = float(np.hypot(*np.diff(pts, axis=0).T).sum())
-        if length < OUTLINE_MIN_LEN * u:
-            continue
-        pts = pts[::2] if len(pts) > 8 else pts              # menos puntos
-        if len(pts) > 4:                                      # suaviza sin mover los extremos
+        pts = pts[::2] if len(pts) > 8 else pts               # menos puntos
+        if len(pts) > 6:                                      # suaviza sin mover los extremos
             sm = pts.copy()
-            sm[1:-1] = (pts[:-2] + pts[1:-1] * 2 + pts[2:]) / 4
+            for _ in range(2):
+                sm[1:-1] = (sm[:-2] + sm[1:-1] * 2 + sm[2:]) / 4
             pts = sm
-        strokes.append((pts, OUTLINE_THICK * u))
-    return strokes
+        width = OUTLINE_THICK * u * (0.75 + 0.7 * strength / peak)   # más fuerte, más grueso
+        out[tier].append((pts, width))
+    return out
 
 
 def _layer_strokes(region, angle, spacing, thick, seed, aw, ah, u_scale):
@@ -241,7 +264,7 @@ class HatchImage:
 
 def hatch(arr, levels, outlines=False):
     """Array en gris (0-255, ya con autocontraste) -> HatchImage de `levels` niveles.
-    Con `outlines` cada capa añade además el contorno de su zona.
+    Con `outlines` se dibujan además los contornos (bordes reales de la foto).
     Los trazos se calculan a min(1080, lado mayor) px: una vista previa pequeña es
     ligera y se ve igual que la exportación final."""
     if not 2 <= levels <= HATCH_MAX_LEVELS:
@@ -253,9 +276,9 @@ def hatch(arr, levels, outlines=False):
     aw, ah = max(1, round(w * k)), max(1, round(h * k))
     small = Image.fromarray(np.clip(arr, 0, 255).astype("uint8")).resize((aw, ah), Image.LANCZOS)
     gray = np.array(small.filter(ImageFilter.GaussianBlur(8 * u))).astype(np.float32)
-    layers, contours = [], []
+    layers = []
     for i in range(levels - 1):
         region = _clean_region(gray < np.percentile(gray, COVER[i]), u)
         layers.append(_layer_strokes(region, ANGLES[i], SPACING[i], THICKNESS[i], i, aw, ah, u))
-        contours.append(_outline_strokes(region, u) if outlines else [])
+    contours = _outline_layers(np.array(small, dtype=np.float32), levels, u) if outlines else None
     return HatchImage(w, h, aw, ah, layers, contours)

@@ -423,7 +423,7 @@ INFO_TEXTS = {
         "<ul style='margin:3px 0 3px -18px'>"
         "<li><b>El blanco es el papel:</b> se deja vacío. Solo se dibujan líneas.</li>"
         "<li><b>Nivel 2:</b> una sola dirección de líneas paralelas, donde hay sombra, "
-        "y el contorno de esa zona.</li>"
+        "y las líneas principales de los contornos (silueta, ojos, boca…).</li>"
         "<li><b>Cada nivel más</b> añade una dirección nueva que cruza las anteriores, "
         "solo dentro de las zonas más oscuras. Los trazos previos no cambian.</li></ul>"
         "<b>Cuantos más niveles, más juntas van las líneas</b> de las capas nuevas, "
@@ -680,8 +680,8 @@ class PosterizerApp(QWidget):
         self._prog_toggled(True)
         self.outline_chk = QCheckBox("Dibujar contornos de las formas")
         self.outline_chk.setChecked(True)
-        self.outline_chk.setToolTip("Sombreado cruzado: cada nivel añade, además de los "
-                                    "trazos, el contorno de su zona de sombra.")
+        self.outline_chk.setToolTip("Sombreado cruzado: dibuja los bordes reales de la foto "
+                                    "(silueta, ojos, boca…); cada nivel añade líneas más finas.")
         self.outline_chk.toggled.connect(self._params_changed)
         og.addWidget(self.outline_chk, 11, 0, 1, 2)
         self.outline_chk.setVisible(False)
