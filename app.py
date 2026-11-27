@@ -43,7 +43,7 @@ LEVEL_CHOICES = list(range(2, 11))
 OTHER_LEVELS = {3, 4, 5, 6}    # niveles por defecto de Cuantiles / Lineal
 CAPAS_LEVELS = {2, 4, 6, 8}    # niveles por defecto (método «Sombras en capas»)
 DEFAULT_LEVELS = CAPAS_LEVELS
-TRAZOS_LEVELS = {2, 3, 4, 5}   # niveles por defecto del sombreado cruzado
+TRAZOS_LEVELS = {2, 4, 6, 8}   # niveles por defecto del sombreado cruzado
 LEVEL_DEFAULTS = {"capas": CAPAS_LEVELS, "trazos": TRAZOS_LEVELS, "otros": OTHER_LEVELS}
 MAX_LEVELS = {"trazos": hatching.HATCH_MAX_LEVELS}   # tope de niveles por método
 
@@ -424,8 +424,9 @@ INFO_TEXTS = {
         "<li><b>Nivel 2:</b> una sola dirección de líneas paralelas, donde hay sombra.</li>"
         "<li><b>Cada nivel más</b> añade una dirección nueva que cruza las anteriores, "
         "solo dentro de las zonas más oscuras. Los trazos previos no cambian.</li></ul>"
-        "<b>Uso:</b> dibuja primero las líneas del nivel 2 y ve cruzando encima. "
-        "Hasta 5 niveles.<br>"
+        "<b>Cuantos más niveles, más juntas van las líneas</b> de las capas nuevas, "
+        "así que cada nivel oscurece de verdad.<br>"
+        "<b>Uso:</b> dibuja primero las líneas del nivel 2 y ve cruzando encima.<br>"
         "<span style='color:#777'>En «Salida» puedes guardar SVG vectorial, y el PDF "
         "lleva los trazos como vectores: nítidos a cualquier tamaño.</span>"),
     "cuantiles": (
@@ -640,7 +641,7 @@ class PosterizerApp(QWidget):
         og.addWidget(QLabel("Método:"), 2, 0, 1, 2)
         self.mode = QComboBox()
         self.mode.addItem("Sombras en capas (blanco = papel)", "capas")
-        self.mode.addItem("Sombreado cruzado (trazos, hasta 5 niveles)", "trazos")
+        self.mode.addItem("Sombreado cruzado (trazos)", "trazos")
         self.mode.addItem("Cuantiles (masas equilibradas)", "cuantiles")
         self.mode.addItem("Lineal (cortes iguales)", "lineal")
         self.mode.currentIndexChanged.connect(self._mode_changed)
@@ -962,7 +963,7 @@ class PosterizerApp(QWidget):
         for n, cb in self.level_checks.items():
             cb.blockSignals(True)
             cb.setChecked(n in wanted and n <= top)
-            cb.setEnabled(n <= top)         # el sombreado cruzado llega solo hasta 5
+            cb.setEnabled(n <= top)         # cada método tiene su tope de niveles
             cb.blockSignals(False)
         self._params_changed()
 
