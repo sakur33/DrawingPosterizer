@@ -30,6 +30,9 @@ image per level so you can compare a 3-value study with a 6-value one side by si
   Each extra level keeps the shapes and greys of the previous ones and just adds
   darker shadows *inside* them, so a 2-level drawing can be darkened into the 4- and
   6-level versions without redoing anything. An in-app panel explains how to use it.
+- **Crosshatching** mode: shadows built from strokes. Each extra level (up to 5) adds a
+  new stroke direction that crosses the previous ones, only inside the darker zones.
+  Save it as **vector SVG** and the PDF carries real strokes, sharp at any size.
 - **Upscale** up to x4 before posterizing, so edges between masses come out smooth
   and you can print large to draw from.
 - **Export** the images to a folder (PNG or JPG), and/or a **PDF** with one level per
@@ -73,6 +76,7 @@ python app.py
 - `app.py` — interfaz (PyQt5): asistente de 4 pasos, exportación y PDF/impresión.
 - `cropwidget.py` — widget de recorte (mover, redimensionar, proporción fija).
 - `posterizer_core.py` — lógica de posterizado (sin interfaz).
+- `hatching.py` — sombreado cruzado: genera los trazos como geometría (sin interfaz).
 - `make_icon.py` — genera `assets/Posterizer.ico` y `assets/Posterizer.icns`.
 
 ## Modo «Sombras en capas»
@@ -83,6 +87,15 @@ solo hay sombras. Cada profundidad tiene un umbral y un tono **fijos**
 existente: solo añade una sombra más oscura dentro de la anterior (n niveles = n-1
 sombras, de 2 a 10). La ventana de niveles incluye un panel «¿Cómo funciona?»
 (`InfoWidget` en `app.py`) que lo explica al elegir el método.
+
+## Modo «Sombreado cruzado»
+
+Cuarto método (`trazos`, módulo `hatching.py`). Cada nivel (hasta 5) añade una capa de
+trazos en otra dirección dentro de la zona más oscura de la anterior; las zonas salen
+de cuantiles de la propia foto, así que son las mismas en todos los niveles. Los trazos
+se generan como **geometría** (polilíneas), no como píxeles: de ahí salen la imagen
+(PNG/JPG), el **SVG** vectorial (una capa por nivel, a la medida elegida) y el PDF, que
+dibuja los trazos como vectores.
 
 ## Cómo se posteriza
 
