@@ -170,15 +170,19 @@ def sheet(panels, cols, title=None):
     w, h = panels[0][1].size
     rows = (len(panels) + cols - 1) // cols
     top = 0
-    out = Image.new("L", (cols * w + (cols + 1) * gap, rows * (h + lab) + (rows + 1) * gap), 255)
+    h = max(im.size[1] for _, im in panels)
+    mode = "RGB" if any(im.mode == "RGB" for _, im in panels) else "L"   # la guía lleva rojo
+    out = Image.new(mode, (cols * w + (cols + 1) * gap, rows * (h + lab) + (rows + 1) * gap),
+                    (255, 255, 255) if mode == "RGB" else 255)
     d = ImageDraw.Draw(out)
     f = font(26)
     for i, (name, im) in enumerate(panels):
         r, c = divmod(i, cols)
         x, y = gap + c * (w + gap), gap + r * (h + lab + gap)
-        out.paste(im.convert("L"), (x, y))
-        d.rectangle([x, y, x + w - 1, y + h - 1], outline=190)
-        d.text((x + w // 2, y + h + lab // 2), name, fill=40, font=f, anchor="mm")
+        out.paste(im.convert(mode), (x, y))
+        d.rectangle([x, y, x + w - 1, y + im.size[1] - 1], outline=190)
+        d.text((x + w // 2, y + h + lab // 2), name, fill=(40,) * 3 if mode == "RGB" else 40,
+               font=f, anchor="mm")
     return out
 
 
@@ -190,6 +194,15 @@ def main():
     def arrays(levels):
         blurs = core.level_blurs(levels, 2.0, 0.5)          # desenfoque progresivo (por defecto)
         return {n: core.blur_contrast(gray, blurs[n]) for n in levels}
+
+    # Una lámina por tono, con la tira de tonos encima (opción por defecto del modo capas)
+    sheets = 6
+    arr = arrays([sheets + 1])[sheets + 1]
+    panels = [(f"Sheet {n - 1} of {sheets}",
+               core.quantize(arr, n, "capas", only_new=True, guide=sheets + 1))
+              for n in range(2, sheets + 2)]
+    sheet(panels, 3).save(os.path.join(HERE, "capas_laminas.png"), optimize=True)
+    print("ok capas_laminas")
 
     jobs = {
         "capas": ([2, 4, 6, 8], lambda a, n: core.quantize(a, n, "capas")),

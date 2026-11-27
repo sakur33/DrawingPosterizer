@@ -27,9 +27,10 @@ image per level so you can compare a 3-value study with a 6-value one side by si
 - **Tune it**: smoothing groups small details into clean masses, and the tone split
   can be balanced by *quantiles* (every level covers a similar area) or *linear*.
 - **Layered shadows** mode: white stays as empty paper and only shadows are drawn.
-  Each extra level keeps the shapes and greys of the previous ones and just adds
-  darker shadows *inside* them, so a 2-level drawing can be darkened into the 4- and
-  6-level versions without redoing anything. An in-app panel explains how to use it.
+  You choose one number, say 6, and get **6 sheets, one per tone, from lightest to
+  darkest**. Each sheet shows what to paint with its tone, and a strip of all the tones
+  on top marks the current one in red. Shadows are additive: you paint each sheet over
+  the previous one. An in-app panel explains how to use it.
 - **Crosshatching** mode: shadows built from strokes. Each extra level (up to 10) adds a
   new stroke direction that crosses the previous ones, only inside the darker zones,
   with the lines getting closer together on deeper layers. Optionally it also draws
@@ -50,13 +51,22 @@ with the app's default settings. The app lets you pick the levels you want.
 
 ### Layered shadows (the default)
 
-White stays as empty paper and only shadows are drawn. **Each extra level keeps the
-shapes and greys of the previous ones and only adds darker shadows inside them**, so you
-can draw the 2-level version first and darken it into the 4-, 6- and 8-level versions
-without redoing anything. Quantizing to N levels the usual way changes every tone each
-time; this does not.
+White stays as empty paper and only shadows are drawn. The app asks for a single number
+of sheets and makes them all: **one sheet per tone, from the lightest grey to the
+darkest**. Shadows are additive, so each sheet shows everything that ends up at least that
+dark, in that sheet's grey. Paint sheet 1, then sheet 2 over it, and so on: every area
+finishes with the tone of the last sheet it appears in. Above each image, a strip shows
+the whole range of tones (paper first) with the one to paint on that sheet framed in red.
+Because the greys are fixed, a 4-sheet job and a 6-sheet job share their first four sheets.
 
-![Layered shadows at 2, 4, 6 and 8 levels](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/capas.png)
+![Layered shadows, 6 sheets: one per tone, with the tone strip on top](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/capas_laminas.png)
+
+Two options in this mode: untick *one sheet per tone* to get the classic nested versions
+instead (the same shapes at 2, 4, 6 and 8 levels, as below), and *levels adapted to photo
+detail* to place the tone cuts where the photo has the most detail (hair in a dark photo,
+for instance) instead of at fixed greys.
+
+![Nested layered shadows at 2, 4, 6 and 8 levels](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/capas.png)
 
 ### Crosshatching
 
@@ -81,7 +91,7 @@ The classic posterize methods. *Quantiles* makes every level cover a similar are
 
 1. Open or drag in a photo (JPG, PNG, WEBP, TIFF, BMP, HEIC).
 2. Crop it.
-3. Choose levels, smoothing and upscale, checking the previews.
+3. Choose the number of sheets (or the levels), smoothing and upscale, checking the previews.
 4. Save the images, the PDF, or print.
 
 ![The levels screen: choose a method, the levels and the smoothing, and check the previews](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/app.png)
@@ -125,8 +135,9 @@ python app.py
 - `cropwidget.py` — widget de recorte (mover, redimensionar, proporción fija).
 - `posterizer_core.py` — lógica de posterizado (sin interfaz).
 - `hatching.py` — sombreado cruzado: genera los trazos como geometría (sin interfaz).
-- `docs/` — imágenes del README. Se regeneran con `python docs/make_docs.py` (el bodegón
-  se renderiza ahí mismo, sin fotos de terceros).
+- `docs/` — imágenes del README (incluida `capas_laminas.png`, el ejemplo de láminas con
+  guía de tonos). Se regeneran con `python docs/make_docs.py` (el bodegón se renderiza
+  ahí mismo, sin fotos de terceros).
 - `make_icon.py` — genera `assets/Posterizer.ico` y `assets/Posterizer.icns`.
 
 ## Modo «Sombras en capas»
@@ -137,6 +148,16 @@ solo hay sombras. Cada profundidad tiene un umbral y un tono **fijos**
 existente: solo añade una sombra más oscura dentro de la anterior (n niveles = n-1
 sombras, de 2 a 10). La ventana de niveles incluye un panel «¿Cómo funciona?»
 (`InfoWidget` en `app.py`) que lo explica al elegir el método.
+
+Por defecto («Una hoja por tono, con guía de tonos») la app pide **un solo número**, k,
+y genera k láminas: la lámina j es el nivel j+1 con `only_new=True`, es decir, todo lo
+que acaba al menos tan oscuro como la sombra j, en su tono (las sombras son aditivas: se
+pinta cada lámina encima de la anterior). `add_tone_guide()` añade encima la tira con
+papel + k tonos y marca en rojo el de la lámina; la imagen sale en RGB y algo más alta
+(a medida fija, la foto conserva su ancho). Máximo 9 láminas (`NESTED_SHEETS_MAX`).
+Desmarcarlo devuelve las casillas de niveles y las versiones anidadas de siempre.
+«Niveles adaptados al detalle» (`adaptive_thresholds`) reparte los umbrales según el
+gradiente local de la foto en vez de usar los fijos.
 
 ## Modo «Sombreado cruzado»
 
