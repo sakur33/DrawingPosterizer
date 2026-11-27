@@ -73,7 +73,7 @@ python app.py
 - `app.py` — interfaz (PyQt5): asistente de 4 pasos, exportación y PDF/impresión.
 - `cropwidget.py` — widget de recorte (mover, redimensionar, proporción fija).
 - `posterizer_core.py` — lógica de posterizado (sin interfaz).
-- `make_icon.py` — genera `assets/Posterizer.ico`.
+- `make_icon.py` — genera `assets/Posterizer.ico` y `assets/Posterizer.icns`.
 
 ## Modo «Sombras en capas»
 
@@ -101,6 +101,29 @@ build.bat
 Deja `dist\Posterizer.exe` (onefile, sin consola). Al publicar el release en
 GitHub, el nombre del asset debe casar con el `assetPattern` de
 `UsefulApps/src/content/apps/posterizer.md`.
+
+## Construir la app de macOS
+
+En un Mac (PyInstaller no compila de forma cruzada), con Python 3.9+ y las Xcode
+Command Line Tools:
+
+```bash
+./build_mac.sh            # solo compila: dist/Posterizer.app (sin firmar)
+./build_mac.sh --sign     # compila + firma + notariza + dist/Posterizer-mac.zip
+```
+
+Para `--sign` hace falta la cuenta de desarrollador de Apple:
+
+```bash
+export CODESIGN_IDENTITY="Developer ID Application: Tu Nombre (TEAMID)"
+export NOTARY_PROFILE="posterizer-notary"
+# Una sola vez: guarda las credenciales de notarización en el llavero
+xcrun notarytool store-credentials "posterizer-notary"     --apple-id "tu@correo" --team-id "TEAMID" --password "contraseña-de-app"
+```
+
+El `.spec` es `Posterizer-mac.spec` (bundle id y versión al principio) y los permisos
+del hardened runtime están en `entitlements.plist`. El binario resultante es para la
+arquitectura del Mac que compila (Apple Silicon o Intel).
 
 ## Configurar la donación
 
