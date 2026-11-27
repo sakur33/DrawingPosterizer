@@ -104,14 +104,14 @@ def quantize_nested(arr, levels):
     return Image.fromarray(out, mode="L")
 
 
-def quantize(arr, levels, mode="cuantiles"):
+def quantize(arr, levels, mode="cuantiles", outlines=False):
     """Array en gris -> imagen PIL 'L' con exactamente `levels` tonos."""
     if levels < 2:
         raise ValueError("El número de niveles debe ser al menos 2.")
     if mode == "capas":
         return quantize_nested(arr, levels)
     if mode == "trazos":
-        return hatching.hatch(arr, levels).render()
+        return hatching.hatch(arr, levels, outlines).render()
     if mode == "cuantiles":
         pct = np.linspace(0, 100, levels + 1)[1:-1]
         thresholds = np.percentile(arr, pct)

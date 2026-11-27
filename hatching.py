@@ -8,10 +8,15 @@ la imagen), así que son las mismas en 2, 3, 4… niveles.
 
 Los trazos se generan como GEOMETRÍA (polilíneas), no como píxeles, de modo que
 la misma geometría sirve para:
+Opcionalmente cada capa añade también el CONTORNO de su zona (el borde entre la sombra
+y la luz), que da la silueta de los rasgos: ojos, nariz, boca, cabeza.
+
   - HatchImage.render()  -> imagen PIL en gris a cualquier resolución
   - HatchImage.to_svg()  -> SVG vectorial
   - el PDF/impresión (se dibujan las polilíneas con QPainter, ver app.py)
 """
+from collections import defaultdict
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -31,6 +36,9 @@ ANALYSIS_SIDE = 1080                  # lado mayor de referencia: todas las medi
 STEP = 4.0                            # paso de muestreo a lo largo del trazo
 MIN_LEN = 12.0                        # trazos más cortos se descartan
 CLEAN = 9                             # tamaño del filtro que limpia las zonas
+OUTLINE_THICK = 2.6                   # grosor del contorno (px de análisis)
+OUTLINE_SMOOTH = 2.0                  # suavizado de la zona antes de sacar el contorno
+OUTLINE_MIN_LEN = 40.0                # contornos más cortos se descartan (px de análisis)
 
 
 def _noise_field(seed, scale, aw, ah):
@@ -60,6 +68,85 @@ def _clean_region(mask, u):
     m = m.filter(ImageFilter.MinFilter(size)).filter(ImageFilter.MaxFilter(size))
     m = m.filter(ImageFilter.MaxFilter(size)).filter(ImageFilter.MinFilter(size))
     return np.array(m) > 127
+
+
+# Marching squares: pares de bordes (T=arriba, R=derecha, B=abajo, L=izquierda) que cruza
+# el contorno en cada caso de las 4 esquinas (a=sup.izq, b=sup.der, c=inf.der, d=inf.izq).
+_EDGES = {1: [("L", "B")], 2: [("B", "R")], 3: [("L", "R")], 4: [("T", "R")],
+          6: [("T", "B")], 7: [("T", "L")], 8: [("T", "L")], 9: [("T", "B")],
+          11: [("T", "R")], 12: [("L", "R")], 13: [("B", "R")], 14: [("L", "B")]}
+
+
+def _trace_contours(f, level=0.5):
+    """Contornos de nivel `level` del campo `f` como polilíneas (lista de arrays (n,2) x,y)."""
+    h, w = f.shape
+    a, b, c, d = f[:-1, :-1], f[:-1, 1:], f[1:, 1:], f[1:, :-1]
+    idx = ((a > level) * 8 + (b > level) * 4 + (c > level) * 2 + (d > level) * 1)
+    ys, xs = np.nonzero((idx > 0) & (idx < 15))
+    adj = defaultdict(list)
+    for y, x in zip(ys.tolist(), xs.tolist()):
+        case = int(idx[y, x])
+        if case in (5, 10):                      # punto de silla: decide el centro
+            hi = (a[y, x] + b[y, x] + c[y, x] + d[y, x]) / 4 > level
+            if (case == 5) == hi:
+                pairs = [("T", "L"), ("B", "R")]
+            else:
+                pairs = [("T", "R"), ("L", "B")]
+        else:
+            pairs = _EDGES[case]
+        k = y * w + x
+        ids = {"T": 2 * k, "B": 2 * (k + w), "L": 2 * k + 1, "R": 2 * (k + 1) + 1}
+        for e1, e2 in pairs:
+            i1, i2 = ids[e1], ids[e2]
+            adj[i1].append(i2)
+            adj[i2].append(i1)
+
+    def point(eid):
+        k, vert = eid >> 1, eid & 1
+        y, x = divmod(k, w)
+        if vert:                                  # arista vertical (y,x)-(y+1,x)
+            return (x, y + (level - f[y, x]) / (f[y + 1, x] - f[y, x]))
+        return (x + (level - f[y, x]) / (f[y, x + 1] - f[y, x]), y)
+
+    visited, chains = set(), []
+    ends = [k for k, v in adj.items() if len(v) == 1]        # contornos abiertos primero
+    for start in ends + list(adj):
+        if start in visited:
+            continue
+        chain, cur = [start], start
+        visited.add(start)
+        while True:
+            nxt = [n for n in adj[cur] if n not in visited]
+            if not nxt:
+                break
+            cur = nxt[0]
+            chain.append(cur)
+            visited.add(cur)
+        if len(chain) > 2 and chain[0] in adj[chain[-1]]:    # contorno cerrado
+            chain.append(chain[0])
+        chains.append(np.array([point(e) for e in chain], dtype=np.float32))
+    return chains
+
+
+def _outline_strokes(region, u):
+    """Contorno de una zona como trazos (pts, grosor), ya suavizado y sin fragmentos."""
+    m = Image.fromarray((region * 255).astype("uint8"))
+    f = np.array(m.filter(ImageFilter.GaussianBlur(max(1.0, OUTLINE_SMOOTH * u)))
+                 ).astype(np.float32) / 255.0
+    strokes = []
+    for pts in _trace_contours(f):
+        if len(pts) < 4:
+            continue
+        length = float(np.hypot(*np.diff(pts, axis=0).T).sum())
+        if length < OUTLINE_MIN_LEN * u:
+            continue
+        pts = pts[::2] if len(pts) > 8 else pts              # menos puntos
+        if len(pts) > 4:                                      # suaviza sin mover los extremos
+            sm = pts.copy()
+            sm[1:-1] = (pts[:-2] + pts[1:-1] * 2 + pts[2:]) / 4
+            pts = sm
+        strokes.append((pts, OUTLINE_THICK * u))
+    return strokes
 
 
 def _layer_strokes(region, angle, spacing, thick, seed, aw, ah, u_scale):
@@ -103,10 +190,12 @@ def _layer_strokes(region, angle, spacing, thick, seed, aw, ah, u_scale):
 class HatchImage:
     """Resultado del sombreado cruzado: geometría + tamaño de salida en píxeles."""
 
-    def __init__(self, width, height, aw, ah, layers):
+    def __init__(self, width, height, aw, ah, layers, outlines=None):
         self.width, self.height = width, height        # tamaño de salida (px)
         self.aw, self.ah = aw, ah                      # espacio de los trazos
         self.layers = layers                           # lista de capas; cada una, lista de (pts, grosor)
+        # contorno de cada capa (misma longitud que `layers`; vacío si no se pidieron)
+        self.outlines = outlines or [[] for _ in layers]
 
     @property
     def size(self):
@@ -119,8 +208,8 @@ class HatchImage:
         s = self.width / self.aw * ss
         img = Image.new("L", (self.width * ss, self.height * ss), 255)
         d = ImageDraw.Draw(img)
-        for layer in self.layers:
-            for pts, w in layer:
+        for layer, outline in zip(self.layers, self.outlines):
+            for pts, w in layer + outline:
                 d.line([tuple(p) for p in (pts * s).tolist()], fill=INK,
                        width=max(1, round(w * s)), joint="curve")
         if ss > 1:
@@ -137,18 +226,22 @@ class HatchImage:
                f'<rect width="{self.aw}" height="{self.ah}" fill="#ffffff"/>',
                f'<g fill="none" stroke="#{INK:02x}{INK:02x}{INK:02x}" '
                'stroke-linecap="round" stroke-linejoin="round">']
-        for i, layer in enumerate(self.layers, 1):
-            out.append(f'<g id="capa-{i}">')
-            for pts, w in layer:
-                p = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts.tolist())
-                out.append(f'<polyline stroke-width="{w:.2f}" points="{p}"/>')
-            out.append("</g>")
+        for i, (layer, outline) in enumerate(zip(self.layers, self.outlines), 1):
+            for name, strokes in ((f"capa-{i}", layer), (f"contorno-{i}", outline)):
+                if not strokes:
+                    continue
+                out.append(f'<g id="{name}">')
+                for pts, w in strokes:
+                    p = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts.tolist())
+                    out.append(f'<polyline stroke-width="{w:.2f}" points="{p}"/>')
+                out.append("</g>")
         out.append("</g></svg>")
         return "\n".join(out)
 
 
-def hatch(arr, levels):
+def hatch(arr, levels, outlines=False):
     """Array en gris (0-255, ya con autocontraste) -> HatchImage de `levels` niveles.
+    Con `outlines` cada capa añade además el contorno de su zona.
     Los trazos se calculan a min(1080, lado mayor) px: una vista previa pequeña es
     ligera y se ve igual que la exportación final."""
     if not 2 <= levels <= HATCH_MAX_LEVELS:
@@ -160,8 +253,9 @@ def hatch(arr, levels):
     aw, ah = max(1, round(w * k)), max(1, round(h * k))
     small = Image.fromarray(np.clip(arr, 0, 255).astype("uint8")).resize((aw, ah), Image.LANCZOS)
     gray = np.array(small.filter(ImageFilter.GaussianBlur(8 * u))).astype(np.float32)
-    layers = []
+    layers, contours = [], []
     for i in range(levels - 1):
         region = _clean_region(gray < np.percentile(gray, COVER[i]), u)
         layers.append(_layer_strokes(region, ANGLES[i], SPACING[i], THICKNESS[i], i, aw, ah, u))
-    return HatchImage(w, h, aw, ah, layers)
+        contours.append(_outline_strokes(region, u) if outlines else [])
+    return HatchImage(w, h, aw, ah, layers, contours)
