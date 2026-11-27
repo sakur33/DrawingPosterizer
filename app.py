@@ -9,8 +9,9 @@ import os
 import sys
 
 from PIL import Image
-from PyQt5.QtCore import Qt, QThread, QTimer, QUrl, QSettings, QRectF, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QIcon, QImage, QPainter, QPixmap, QFont
+from PyQt5.QtCore import Qt, QPointF, QThread, QTimer, QUrl, QSettings, QRectF, pyqtSignal
+from PyQt5.QtGui import (QColor, QDesktopServices, QFont, QIcon, QImage, QPainter, QPen,
+                         QPixmap, QPolygonF)
 from PyQt5.QtPrintSupport import QPrintDialog, QPrinter
 from PyQt5.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
@@ -19,6 +20,7 @@ from PyQt5.QtWidgets import (
     QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
+import hatching
 import posterizer_core as core
 from cropwidget import CropWidget
 
@@ -41,6 +43,14 @@ LEVEL_CHOICES = list(range(2, 11))
 OTHER_LEVELS = {3, 4, 5, 6}    # niveles por defecto de Cuantiles / Lineal
 CAPAS_LEVELS = {2, 4, 6, 8}    # niveles por defecto (método «Sombras en capas»)
 DEFAULT_LEVELS = CAPAS_LEVELS
+TRAZOS_LEVELS = {2, 3, 4, 5}   # niveles por defecto del sombreado cruzado
+LEVEL_DEFAULTS = {"capas": CAPAS_LEVELS, "trazos": TRAZOS_LEVELS, "otros": OTHER_LEVELS}
+MAX_LEVELS = {"trazos": hatching.HATCH_MAX_LEVELS}   # tope de niveles por método
+
+
+def level_group(mode):
+    """Cuantiles y Lineal comparten los niveles que el usuario tenía marcados."""
+    return mode if mode in ("capas", "trazos") else "otros"
 RATIOS = [
     ("Libre", None), ("Como la original", "orig"), ("1:1", 1.0),
     ("4:3", 4 / 3), ("3:4", 3 / 4), ("3:2", 3 / 2), ("2:3", 2 / 3),
@@ -121,13 +131,15 @@ class ExportWorker(QThread):
             self.finished_all.emit([], 0, total)
             return
 
-        def emit_one(caption, image, name):
+        def emit_one(caption, image, name, fmt=None):
             nonlocal ok, fail, done
+            fmt = fmt or self.fmt
             try:
                 if self.folder:
                     dpi = (image.width / (self.size_mm[0] / 25.4)
                            if self.size_mm else None)
-                    core.save_image(image, os.path.join(self.folder, name), self.fmt, dpi)
+                    core.save_image(image, os.path.join(self.folder, name), fmt, dpi,
+                                    self.size_mm)
                 results.append((caption, image))
                 ok += 1
                 self.log.emit(f"✓ {name}" if self.folder else f"✓ {caption}")
@@ -141,7 +153,8 @@ class ExportWorker(QThread):
         for n in self.levels:
             try:
                 arr = core.blur_contrast(gray, self.blurs[n] * eff)
-                img = core.quantize(arr, n, self.mode)
+                img = (hatching.hatch(arr, n) if self.mode == "trazos"
+                       else core.quantize(arr, n, self.mode))
             except Exception as e:
                 fail += 1
                 done += 1
@@ -152,10 +165,11 @@ class ExportWorker(QThread):
                                     self.upscale, self.fmt)
             emit_one(f"{n} niveles", img, name)
         if self.include_gray:
+            ofmt = "png" if self.fmt == "svg" else self.fmt   # el original no es vectorial
             emit_one("Original en grises", gray,
                      f"{self.base}_original"
                      + (f"_x{self.upscale:g}" if self.upscale > 1 else "")
-                     + "." + self.fmt)
+                     + "." + ofmt, ofmt)
         self.finished_all.emit(results, ok, fail)
 
 
@@ -184,24 +198,59 @@ INSTRUCTIONS = [
 ]
 
 
-def paint_instructions(painter, printer, levels):
-    """Primera página: cómo usar el modo «capas» + los tonos de cada nivel."""
+INSTRUCTIONS_HATCH = [
+    ("title", "Sombreado cruzado"),
+    ("text", "Cómo usar estas hojas para construir la sombra con trazos."),
+    ("step", "1.  El blanco es el papel: déjalo vacío. Solo se dibujan trazos."),
+    ("step", "2.  Empieza por la hoja con menos niveles: rellena con líneas paralelas, "
+             "en la dirección que ves, las zonas con trazos. Es tu primera capa."),
+    ("step", "3.  En la hoja siguiente se conservan las zonas y los trazos de las "
+             "anteriores. No los cambies: cruza con una dirección nueva solo dentro de "
+             "las zonas más oscuras."),
+    ("step", "4.  Repite hasta el último nivel. Cuantas más capas se cruzan en un "
+             "sitio, más oscuro queda."),
+]
+
+
+def paint_hatch(painter, hatch_img, target):
+    """Dibuja el sombreado cruzado como vectores (trazos reales) dentro de `target`."""
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.fillRect(target, Qt.white)
+    k = target.width() / hatch_img.aw
+    pen = QPen(QColor(hatching.INK, hatching.INK, hatching.INK))
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    for layer in hatch_img.layers:
+        for pts, w in layer:
+            pen.setWidthF(w * k)
+            painter.setPen(pen)
+            painter.drawPolyline(QPolygonF(
+                [QPointF(target.x() + x * k, target.y() + y * k) for x, y in pts.tolist()]))
+    painter.restore()
+
+
+def paint_instructions(painter, printer, levels, kind="capas"):
+    """Primera página: cómo usar el método. En «capas» añade los tonos de cada nivel."""
     mm = printer.resolution() / 25.4
     page = printer.pageRect()
     margin = 15 * mm
     width = page.width() - 2 * margin
     y = margin
     flags = Qt.TextWordWrap | Qt.AlignLeft | Qt.AlignTop
-    for kind, text in INSTRUCTIONS:
+    texts = INSTRUCTIONS if kind == "capas" else INSTRUCTIONS_HATCH
+    for item_kind, text in texts:
         f = QFont()
-        f.setPointSizeF({"title": 20, "head": 12}.get(kind, 11))
-        f.setBold(kind in ("title", "head"))
+        f.setPointSizeF({"title": 20, "head": 12}.get(item_kind, 11))
+        f.setBold(item_kind in ("title", "head"))
         painter.setFont(f)
-        if kind == "head":
+        if item_kind == "head":
             y += 6 * mm
         rect = painter.boundingRect(QRectF(margin, y, width, page.height()), flags, text)
         painter.drawText(rect, flags, text)
-        y = rect.bottom() + (3 if kind in ("step", "text") else 2) * mm
+        y = rect.bottom() + (3 if item_kind in ("step", "text") else 2) * mm
+    if kind != "capas":
+        return
     f = QFont()
     f.setPointSizeF(10)
     painter.setFont(f)
@@ -219,7 +268,7 @@ def paint_instructions(painter, printer, levels):
 
 
 def paint_pages(printer, results, subtitle, layout, instruction_levels=None,
-                size_mm=None):
+                size_mm=None, instruction_kind="capas"):
     """Dibuja los resultados en `printer`. layout: 'pages' o 'sheet'.
     Con `instruction_levels` (lista de niveles) añade antes la hoja de instrucciones.
     Con `size_mm` = (ancho, alto) cada imagen se dibuja a esa medida real; si no
@@ -238,12 +287,16 @@ def paint_pages(printer, results, subtitle, layout, instruction_levels=None,
     shrunk = False
 
     def draw_cell(box, caption, image):
-        qi = pil_to_qimage(image)
+        vec = isinstance(image, hatching.HatchImage)     # trazos: se dibujan como vectores
+        qi = None if vec else pil_to_qimage(image)
         avail = QRectF(box.x(), box.y(), box.width(), box.height() - cap_h)
-        s = min(avail.width() / qi.width(), avail.height() / qi.height())
-        w, h = qi.width() * s, qi.height() * s
+        s = min(avail.width() / image.width, avail.height() / image.height)
+        w, h = image.width * s, image.height * s
         target = QRectF(avail.x() + (avail.width() - w) / 2, avail.y(), w, h)
-        painter.drawImage(target, qi)
+        if vec:
+            paint_hatch(painter, image, target)
+        else:
+            painter.drawImage(target, qi)
         painter.drawRect(target)
         painter.drawText(QRectF(box.x(), target.bottom() + 1 * mm, box.width(), cap_h),
                          Qt.AlignHCenter | Qt.AlignTop, caption)
@@ -262,7 +315,7 @@ def paint_pages(printer, results, subtitle, layout, instruction_levels=None,
         painter.restore()
 
     if instruction_levels:
-        paint_instructions(painter, printer, instruction_levels)
+        paint_instructions(painter, printer, instruction_levels, instruction_kind)
         printer.newPage()
 
     if size_mm:
@@ -364,6 +417,17 @@ INFO_TEXTS = {
         "<b>Uso:</b> imprime el PDF, dibuja el nivel más bajo y ve oscureciendo encima "
         "para los siguientes, sin borrar nada.<br>"
         "<span style='color:#777'>Con pocos niveles la sombra más oscura es gris, no negro.</span>"),
+    "trazos": (
+        "<b>Sombreado cruzado: la sombra se construye con trazos</b>"
+        "<ul style='margin:3px 0 3px -18px'>"
+        "<li><b>El blanco es el papel:</b> se deja vacío. Solo se dibujan líneas.</li>"
+        "<li><b>Nivel 2:</b> una sola dirección de líneas paralelas, donde hay sombra.</li>"
+        "<li><b>Cada nivel más</b> añade una dirección nueva que cruza las anteriores, "
+        "solo dentro de las zonas más oscuras. Los trazos previos no cambian.</li></ul>"
+        "<b>Uso:</b> dibuja primero las líneas del nivel 2 y ve cruzando encima. "
+        "Hasta 5 niveles.<br>"
+        "<span style='color:#777'>En «Salida» puedes guardar SVG vectorial, y el PDF "
+        "lleva los trazos como vectores: nítidos a cualquier tamaño.</span>"),
     "cuantiles": (
         "<b>Cuantiles:</b> cada nivel cubre un área parecida de la imagen. "
         "Cada versión se calcula por separado, así que los tonos cambian entre 3, 4, 5… niveles."),
@@ -436,7 +500,8 @@ class PosterizerApp(QWidget):
         self.settings = QSettings("Posterizer", "App")
         self.total_exports = int(self.settings.value("total_exports", 0))
         self.worker = None
-        self._saved_levels = set(OTHER_LEVELS)   # se recuperan al salir de «capas»
+        self._levels_by_mode = {}     # niveles marcados que se recuerdan por método
+        self._cur_mode = "capas"
         self.src_path = None
         self.image = None        # PIL RGB completa (con rotaciones aplicadas)
         self.cropped = None      # PIL RGB recortada
@@ -575,6 +640,7 @@ class PosterizerApp(QWidget):
         og.addWidget(QLabel("Método:"), 2, 0, 1, 2)
         self.mode = QComboBox()
         self.mode.addItem("Sombras en capas (blanco = papel)", "capas")
+        self.mode.addItem("Sombreado cruzado (trazos, hasta 5 niveles)", "trazos")
         self.mode.addItem("Cuantiles (masas equilibradas)", "cuantiles")
         self.mode.addItem("Lineal (cortes iguales)", "lineal")
         self.mode.currentIndexChanged.connect(self._mode_changed)
@@ -715,7 +781,7 @@ class PosterizerApp(QWidget):
         pg.addWidget(self.pdf_layout, 3, 1)
         self.chk_instr = QCheckBox("Imprimir las instrucciones (primera hoja)")
         self.chk_instr.setChecked(True)
-        self.chk_instr.setToolTip("Añade una hoja que explica cómo usar las sombras en capas.")
+        self.chk_instr.setToolTip("Añade una hoja que explica cómo usar este método.")
         pg.addWidget(self.chk_instr, 4, 0, 1, 3)
         lay.addWidget(pdf)
 
@@ -759,7 +825,8 @@ class PosterizerApp(QWidget):
         if i == 3:
             self._default_outputs()
             self._size_changed()
-            self.chk_instr.setVisible(self.mode.currentData() == "capas")
+            self._refresh_formats()
+            self.chk_instr.setVisible(self.mode.currentData() in ("capas", "trazos"))
 
     def _reset(self):
         """Vuelve al paso 1: descarta la foto y sus salidas (los ajustes se conservan)."""
@@ -843,11 +910,15 @@ class PosterizerApp(QWidget):
     def _params_changed(self, *_):
         self.timer.start()
 
-    def _set_levels(self, levels):
-        for n, cb in self.level_checks.items():
-            cb.blockSignals(True)
-            cb.setChecked(n in levels)
-            cb.blockSignals(False)
+    def _refresh_formats(self):
+        """SVG vectorial solo está disponible con el sombreado cruzado."""
+        want = ["png", "jpg"] + (["svg"] if self.mode.currentData() == "trazos" else [])
+        if [self.fmt.itemText(i) for i in range(self.fmt.count())] != want:
+            cur = self.fmt.currentText()
+            self.fmt.clear()
+            self.fmt.addItems(want)
+            if cur in want:
+                self.fmt.setCurrentText(cur)
 
     def _set_size_range(self):
         """Rango y paso del campo de medida según la unidad (cm o mm)."""
@@ -883,14 +954,16 @@ class PosterizerApp(QWidget):
 
     def _mode_changed(self, *_):
         mode = self.mode.currentData()
+        self._levels_by_mode[level_group(self._cur_mode)] = set(self._selected_levels())
+        self._cur_mode = mode
         self.info.set_mode(mode)
-        # Al entrar en «capas» se proponen 2, 4 y 6; al salir se recuperan los anteriores.
-        if mode == "capas" and self._saved_levels is None:
-            self._saved_levels = set(self._selected_levels())
-            self._set_levels(CAPAS_LEVELS)
-        elif mode != "capas" and self._saved_levels is not None:
-            self._set_levels(self._saved_levels)
-            self._saved_levels = None
+        top = MAX_LEVELS.get(mode, LEVEL_CHOICES[-1])
+        wanted = self._levels_by_mode.get(level_group(mode), LEVEL_DEFAULTS[level_group(mode)])
+        for n, cb in self.level_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(n in wanted and n <= top)
+            cb.setEnabled(n <= top)         # el sombreado cruzado llega solo hasta 5
+            cb.blockSignals(False)
         self._params_changed()
 
     def _prog_toggled(self, on):
@@ -1046,7 +1119,8 @@ class PosterizerApp(QWidget):
             if land != port:
                 landscape = land > port
         instr = (self._selected_levels()
-                 if self.mode.currentData() == "capas" and self.chk_instr.isChecked()
+                 if self.mode.currentData() in ("capas", "trazos")
+                 and self.chk_instr.isChecked()
                  else None)
         shrunk = False
         try:
@@ -1056,7 +1130,8 @@ class PosterizerApp(QWidget):
                 pr = make_printer(landscape, paper)
                 if QPrintDialog(pr, self).exec_() != QDialog.Accepted:
                     return
-                shrunk = paint_pages(pr, results, subtitle, layout, instr, size)
+                shrunk = paint_pages(pr, results, subtitle, layout, instr, size,
+                                     self.mode.currentData())
                 self.console.append("✓ Enviado a la impresora.")
             else:
                 path = self.pdf_path.text().strip()
@@ -1064,7 +1139,8 @@ class PosterizerApp(QWidget):
                 pr = make_printer(landscape, paper)
                 pr.setOutputFormat(QPrinter.PdfFormat)
                 pr.setOutputFileName(path)
-                shrunk = paint_pages(pr, results, subtitle, layout, instr, size)
+                shrunk = paint_pages(pr, results, subtitle, layout, instr, size,
+                                     self.mode.currentData())
                 self.console.append(f"✓ PDF: {path}")
             if size and shrunk:
                 self.console.append("⚠ La medida elegida no cabe en la hoja: "
