@@ -1123,6 +1123,7 @@ class PosterizerApp(QWidget):
                  and self.chk_instr.isChecked()
                  else None)
         shrunk = False
+        pdf_file = None
         try:
             if not make_pdf:
                 pass
@@ -1141,6 +1142,7 @@ class PosterizerApp(QWidget):
                 pr.setOutputFileName(path)
                 shrunk = paint_pages(pr, results, subtitle, layout, instr, size,
                                      self.mode.currentData())
+                pdf_file = path
                 self.console.append(f"✓ PDF: {path}")
             if size and shrunk:
                 self.console.append("⚠ La medida elegida no cabe en la hoja: "
@@ -1152,11 +1154,27 @@ class PosterizerApp(QWidget):
 
         folder = self.out_dir.text().strip()
         self._after_success(ok)
-        if action == "files" and self.chk_files.isChecked() and os.path.isdir(folder):
-            if QMessageBox.question(self, "Hecho", f"{msg}\n¿Abrir la carpeta?") == QMessageBox.Yes:
-                QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
-        else:
-            QMessageBox.information(self, "Hecho", msg)
+        images_dir = folder if (action == "files" and self.chk_files.isChecked()
+                                and os.path.isdir(folder)) else None
+        self._show_done(msg, images_dir, pdf_file)
+
+    def _show_done(self, msg, images_dir, pdf_file):
+        """Aviso final con atajos para abrir el PDF generado o la carpeta de salida."""
+        pdf_file = pdf_file if pdf_file and os.path.isfile(pdf_file) else None
+        folder = images_dir or (os.path.dirname(pdf_file) if pdf_file else None)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Hecho")
+        box.setText(msg)
+        b_pdf = box.addButton("Abrir PDF", QMessageBox.AcceptRole) if pdf_file else None
+        b_dir = box.addButton("Abrir carpeta", QMessageBox.AcceptRole) if folder else None
+        box.addButton("Cerrar", QMessageBox.RejectRole)
+        box.exec_()
+        clicked = box.clickedButton()
+        if b_pdf is not None and clicked is b_pdf:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(pdf_file))
+        elif b_dir is not None and clicked is b_dir:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
 
     def _after_success(self, ok):
         prev = self.total_exports
