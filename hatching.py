@@ -15,11 +15,15 @@ la misma geometría sirve para:
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-HATCH_MAX_LEVELS = 5                  # n niveles = n-1 capas de trazos
-COVER = [78, 60, 44, 31]              # % más oscuro de la imagen que cubre cada capa
-ANGLES = [45, 135, 12, 102]           # nunca dos capas ortogonales seguidas
-SPACING = [16, 15, 14, 13]            # separación entre trazos (px de análisis)
-THICK = 2.0                           # grosor del trazo (px de análisis)
+HATCH_MAX_LEVELS = 10                 # n niveles = n-1 capas de trazos
+# Una entrada por capa. Cada capa tiene su zona, dirección y separación FIJAS, así que
+# al subir de nivel solo se añade una capa nueva y las anteriores no cambian. Cuanto más
+# profunda la capa, más juntas van sus líneas (y algo más finas) para que cada nivel nuevo
+# oscurezca de verdad.
+COVER = [78, 60, 44, 31, 22, 15, 10, 6, 3]           # % más oscuro de la imagen que cubre
+ANGLES = [45, 135, 12, 102, 28, 118, 75, 160, 58]    # dirección de los trazos (grados)
+SPACING = [16, 15, 14, 13, 12, 10.5, 9, 8, 7]        # separación entre trazos (px de análisis)
+THICKNESS = [2.0, 2.0, 1.9, 1.8, 1.7, 1.5, 1.4, 1.3, 1.2]   # grosor (px de análisis)
 WOBBLE = 2.2                          # cuánto serpentea el trazo (px de análisis)
 INK = 30                              # tono de la tinta (0 = negro)
 ANALYSIS_SIDE = 1080                  # lado mayor de referencia: todas las medidas de arriba
@@ -58,7 +62,7 @@ def _clean_region(mask, u):
     return np.array(m) > 127
 
 
-def _layer_strokes(region, angle, spacing, seed, aw, ah, u_scale):
+def _layer_strokes(region, angle, spacing, thick, seed, aw, ah, u_scale):
     """Polilíneas de una capa: líneas paralelas recortadas a `region`.
     `u_scale` = lado de análisis / ANALYSIS_SIDE (escala todas las medidas)."""
     step, min_len = STEP * u_scale, MIN_LEN * u_scale
@@ -91,7 +95,7 @@ def _layer_strokes(region, angle, spacing, seed, aw, ah, u_scale):
                 continue
             pts = np.stack([x[a:b], y[a:b]], axis=1)
             mid = pts[len(pts) // 2]
-            w = THICK * u_scale * (1 + 0.3 * float(thk(np.array(mid[0]), np.array(mid[1]))))
+            w = thick * u_scale * (1 + 0.3 * float(thk(np.array(mid[0]), np.array(mid[1]))))
             strokes.append((pts.astype(np.float32), w))
     return strokes
 
@@ -159,5 +163,5 @@ def hatch(arr, levels):
     layers = []
     for i in range(levels - 1):
         region = _clean_region(gray < np.percentile(gray, COVER[i]), u)
-        layers.append(_layer_strokes(region, ANGLES[i], SPACING[i], i, aw, ah, u))
+        layers.append(_layer_strokes(region, ANGLES[i], SPACING[i], THICKNESS[i], i, aw, ah, u))
     return HatchImage(w, h, aw, ah, layers)
