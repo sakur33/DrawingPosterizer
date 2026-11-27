@@ -41,12 +41,52 @@ image per level so you can compare a 3-value study with a 6-value one side by si
 - **Export** the images to a folder (PNG or JPG), and/or a **PDF** with one level per
   page or all levels on a single sheet — or send it straight to the printer.
 
+## The methods
+
+The same still life (rendered for this page, so no one's photo) through each method,
+with the app's default settings. The app lets you pick the levels you want.
+
+![The still life, before any processing](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/original.png)
+
+### Layered shadows (the default)
+
+White stays as empty paper and only shadows are drawn. **Each extra level keeps the
+shapes and greys of the previous ones and only adds darker shadows inside them**, so you
+can draw the 2-level version first and darken it into the 4-, 6- and 8-level versions
+without redoing anything. Quantizing to N levels the usual way changes every tone each
+time; this does not.
+
+![Layered shadows at 2, 4, 6 and 8 levels](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/capas.png)
+
+### Crosshatching
+
+Shadows built from strokes, up to 10 levels. Each level adds a new direction of lines
+that crosses the previous ones, only inside the darker zones, and the lines get closer
+together on deeper layers. Optional outlines draw the photo's real edges as clean line
+work, ordered by importance: level 2 keeps the main lines and each level adds finer
+ones. Save it as vector SVG, or print the PDF: the strokes are real vectors.
+
+![Crosshatching at 2, 4, 6 and 8 levels, with outlines](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/trazos.png)
+
+### Quantiles and Linear
+
+The classic posterize methods. *Quantiles* makes every level cover a similar area;
+*Linear* cuts the grey scale into equal steps.
+
+![Quantiles at 3, 4, 5 and 6 levels](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/cuantiles.png)
+
+![Linear at 3, 4, 5 and 6 levels](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/lineal.png)
+
 ## Workflow
 
 1. Open or drag in a photo (JPG, PNG, WEBP, TIFF, BMP, HEIC).
 2. Crop it.
 3. Choose levels, smoothing and upscale, checking the previews.
 4. Save the images, the PDF, or print.
+
+![The levels screen: choose a method, the levels and the smoothing, and check the previews](https://raw.githubusercontent.com/sakur33/DrawingPosterizer/main/docs/app.png)
+
+The app's interface is in Spanish.
 
 Everything runs on your own computer; your photos never leave it.
 
@@ -60,8 +100,13 @@ Everything runs on your own computer; your photos never leave it.
 
 ## Download
 
-**Windows 10 or 11.** `Posterizer.exe` — a single portable file. Download it,
-double-click it, done. Nothing gets installed.
+Grab the file for your system from the
+[latest release](https://github.com/sakur33/DrawingPosterizer/releases/latest):
+
+- **Windows 10 or 11:** `Posterizer.exe`, a single portable file. Download it,
+  double-click it, done. Nothing gets installed.
+- **macOS (Apple Silicon, M1 or later):** `Posterizer-mac.dmg`. Open it and move
+  Posterizer to your Applications folder. Intel Macs are not covered by this build.
 
 <!-- site:end -->
 
@@ -80,6 +125,8 @@ python app.py
 - `cropwidget.py` — widget de recorte (mover, redimensionar, proporción fija).
 - `posterizer_core.py` — lógica de posterizado (sin interfaz).
 - `hatching.py` — sombreado cruzado: genera los trazos como geometría (sin interfaz).
+- `docs/` — imágenes del README. Se regeneran con `python docs/make_docs.py` (el bodegón
+  se renderiza ahí mismo, sin fotos de terceros).
 - `make_icon.py` — genera `assets/Posterizer.ico` y `assets/Posterizer.icns`.
 
 ## Modo «Sombras en capas»
